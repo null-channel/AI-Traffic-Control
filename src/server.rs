@@ -1,11 +1,12 @@
-use axum::{routing::post, Json, Router};
+use axum::{routing::{get, patch, post}, Json, Router};
+use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 use std::{net::SocketAddr, sync::Arc};
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use crate::session::Session;
-use crate::settings::SessionSettings;
+use crate::settings::{SessionSettings, SessionSettingsPatch};
 
 #[derive(Clone, Default)]
 pub struct AppState {
@@ -48,9 +49,41 @@ async fn list_sessions(
     Json(ListSessionsResponse { sessions: ids })
 }
 
+#[derive(Debug, Serialize)]
+struct SessionSettingsResponse {
+    settings: SessionSettings,
+}
+
+async fn get_session_settings(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    axum::extract::Path(id): axum::extract::Path<Uuid>,
+) -> Result<Json<SessionSettingsResponse>, StatusCode> {
+    let sessions = state.sessions.read().await;
+    if let Some(s) = sessions.iter().find(|s| s.id == id) {
+        Ok(Json(SessionSettingsResponse { settings: s.settings.clone() }))
+    } else {
+        Err(StatusCode::NOT_FOUND)
+    }
+}
+
+async fn patch_session_settings(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    axum::extract::Path(id): axum::extract::Path<Uuid>,
+    Json(patch): Json<SessionSettingsPatch>,
+) -> Result<Json<SessionSettingsResponse>, StatusCode> {
+    let mut sessions = state.sessions.write().await;
+    if let Some(s) = sessions.iter_mut().find(|s| s.id == id) {
+        s.settings.apply_patch(patch);
+        Ok(Json(SessionSettingsResponse { settings: s.settings.clone() }))
+    } else {
+        Err(StatusCode::NOT_FOUND)
+    }
+}
+
 pub async fn serve(addr: SocketAddr, state: AppState) -> anyhow::Result<()> {
     let app = Router::new()
         .route("/v1/sessions", post(create_session).get(list_sessions))
+        .route("/v1/sessions/:id/settings", get(get_session_settings).patch(patch_session_settings))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
