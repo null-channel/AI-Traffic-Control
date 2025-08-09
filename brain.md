@@ -7,7 +7,7 @@ Concise, always-current knowledge base for major project information. Keep this 
 
 ## Current snapshot
 
-- Architecture: TBD (no app source checked in yet). Update when core services/modules exist.
+- Architecture: Planning underway for a headless Rust AI coding agent with multi-session orchestration, pluggable model providers, and core tools (discovery, file manipulation, git). Update when code is added.
 - Processes and policies:
   - Conventional Commits required. See `.cursor/rules/conventional-commits.mdc`.
   - Planning-first policy for new features. See `docs/process/feature-planning.md` and template `docs/templates/FEATURE_PLANNING_TEMPLATE.md`.
@@ -28,10 +28,10 @@ Concise, always-current knowledge base for major project information. Keep this 
 ## Key commands
 
 - Create planning doc (example date/slug):
-  - Path: `docs/planning/2025-08-09-flight-scheduling-ui.md`
+  - Path: `docs/planning/2025-08-09-coding-agent-mvp.md`
   - Commit example:
     - `git add -A`
-    - `git commit -m "feat(planning): scaffold flight-scheduling-ui plan" -m "Plan: docs/planning/2025-08-09-flight-scheduling-ui.md"`
+    - `git commit -m "feat(planning): scaffold coding-agent MVP plan" -m "Plan: docs/planning/2025-08-09-coding-agent-mvp.md"`
 
 ## Links
 
