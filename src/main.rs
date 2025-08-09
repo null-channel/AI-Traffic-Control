@@ -5,6 +5,7 @@ use tracing_subscriber::{fmt, EnvFilter};
 mod server;
 mod session;
 mod settings;
+mod discovery;
 
 #[derive(Debug, Parser)]
 #[command(name = "air_traffic_control")] 
