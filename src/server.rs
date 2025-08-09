@@ -7,6 +7,7 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use crate::session::Session;
+use crate::discovery::{list_files, search_files, read_file_under_root};
 use crate::settings::{SessionSettings, SessionSettingsPatch};
 
 #[derive(Clone, Default)]
@@ -114,6 +115,54 @@ async fn get_session_history(
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct ListQuery { max: Option<usize> }
+
+async fn list_session_files(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    axum::extract::Path(id): axum::extract::Path<Uuid>,
+    Query(q): Query<ListQuery>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let sessions = state.sessions.read().await;
+    let s = sessions.iter().find(|s| s.id == id).ok_or(StatusCode::NOT_FOUND)?;
+    let root = s.settings.project_root.clone().ok_or(StatusCode::BAD_REQUEST)?;
+    let items = list_files(&root, q.max.unwrap_or(500));
+    let v = serde_json::to_value(items).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(v))
+}
+
+#[derive(Debug, Deserialize)]
+struct SearchQuery { pattern: String, max: Option<usize> }
+
+async fn search_session_files(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    axum::extract::Path(id): axum::extract::Path<Uuid>,
+    Query(q): Query<SearchQuery>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let sessions = state.sessions.read().await;
+    let s = sessions.iter().find(|s| s.id == id).ok_or(StatusCode::NOT_FOUND)?;
+    let root = s.settings.project_root.clone().ok_or(StatusCode::BAD_REQUEST)?;
+    let items = search_files(&root, &q.pattern, q.max.unwrap_or(500));
+    let v = serde_json::to_value(items).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(v))
+}
+
+#[derive(Debug, Deserialize)]
+struct ReadQuery { path: String, max_bytes: Option<usize> }
+
+async fn read_session_file(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    axum::extract::Path(id): axum::extract::Path<Uuid>,
+    Query(q): Query<ReadQuery>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let sessions = state.sessions.read().await;
+    let s = sessions.iter().find(|s| s.id == id).ok_or(StatusCode::NOT_FOUND)?;
+    let root = s.settings.project_root.clone().ok_or(StatusCode::BAD_REQUEST)?;
+    let content = read_file_under_root(&root, &q.path, q.max_bytes.unwrap_or(64 * 1024))
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
+    Ok(Json(serde_json::json!({"path": q.path, "content": content})))
+}
+
 async fn patch_session_settings(
     axum::extract::State(state): axum::extract::State<AppState>,
     axum::extract::Path(id): axum::extract::Path<Uuid>,
@@ -133,6 +182,9 @@ pub async fn serve(addr: SocketAddr, state: AppState) -> anyhow::Result<()> {
         .route("/v1/sessions", post(create_session).get(list_sessions))
         .route("/v1/sessions/:id/settings", get(get_session_settings).patch(patch_session_settings))
         .route("/v1/sessions/:id/history", get(get_session_history))
+        .route("/v1/sessions/:id/discovery/list", get(list_session_files))
+        .route("/v1/sessions/:id/discovery/search", get(search_session_files))
+        .route("/v1/sessions/:id/discovery/read", get(read_session_file))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
