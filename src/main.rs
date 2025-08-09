@@ -6,6 +6,7 @@ mod server;
 mod session;
 mod settings;
 mod discovery;
+mod file_ops;
 
 #[derive(Debug, Parser)]
 #[command(name = "air_traffic_control")] 

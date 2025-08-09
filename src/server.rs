@@ -8,6 +8,7 @@ use uuid::Uuid;
 
 use crate::session::Session;
 use crate::discovery::{list_files, search_files, read_file_under_root};
+use crate::file_ops::{write_file_under_root, move_file_under_root, delete_file_under_root};
 use crate::settings::{SessionSettings, SessionSettingsPatch};
 
 #[derive(Clone, Default)]
@@ -163,6 +164,55 @@ async fn read_session_file(
     Ok(Json(serde_json::json!({"path": q.path, "content": content})))
 }
 
+#[derive(Debug, Deserialize)]
+struct WriteBody { path: String, content: String, create: Option<bool>, dry_run: Option<bool>, preview_bytes: Option<usize> }
+
+async fn write_session_file(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    axum::extract::Path(id): axum::extract::Path<Uuid>,
+    Json(b): Json<WriteBody>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let sessions = state.sessions.read().await;
+    let s = sessions.iter().find(|s| s.id == id).ok_or(StatusCode::NOT_FOUND)?;
+    let root = s.settings.project_root.clone().ok_or(StatusCode::BAD_REQUEST)?;
+    let dry_run = b.dry_run.unwrap_or_else(|| s.settings.tool_policies.as_ref().and_then(|p| p.dry_run).unwrap_or(true));
+    let res = write_file_under_root(&root, &b.path, &b.content, b.create.unwrap_or(true), dry_run, b.preview_bytes.unwrap_or(1024))
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
+    Ok(Json(serde_json::to_value(res).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?))
+}
+
+#[derive(Debug, Deserialize)]
+struct MoveBody { from: String, to: String, dry_run: Option<bool> }
+
+async fn move_session_file(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    axum::extract::Path(id): axum::extract::Path<Uuid>,
+    Json(b): Json<MoveBody>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let sessions = state.sessions.read().await;
+    let s = sessions.iter().find(|s| s.id == id).ok_or(StatusCode::NOT_FOUND)?;
+    let root = s.settings.project_root.clone().ok_or(StatusCode::BAD_REQUEST)?;
+    let dry_run = b.dry_run.unwrap_or_else(|| s.settings.tool_policies.as_ref().and_then(|p| p.dry_run).unwrap_or(true));
+    let res = move_file_under_root(&root, &b.from, &b.to, dry_run).map_err(|_| StatusCode::BAD_REQUEST)?;
+    Ok(Json(serde_json::to_value(res).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?))
+}
+
+#[derive(Debug, Deserialize)]
+struct DeleteBody { path: String, dry_run: Option<bool> }
+
+async fn delete_session_file(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    axum::extract::Path(id): axum::extract::Path<Uuid>,
+    Json(b): Json<DeleteBody>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let sessions = state.sessions.read().await;
+    let s = sessions.iter().find(|s| s.id == id).ok_or(StatusCode::NOT_FOUND)?;
+    let root = s.settings.project_root.clone().ok_or(StatusCode::BAD_REQUEST)?;
+    let dry_run = b.dry_run.unwrap_or_else(|| s.settings.tool_policies.as_ref().and_then(|p| p.dry_run).unwrap_or(true));
+    let res = delete_file_under_root(&root, &b.path, dry_run).map_err(|_| StatusCode::BAD_REQUEST)?;
+    Ok(Json(serde_json::to_value(res).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?))
+}
+
 async fn patch_session_settings(
     axum::extract::State(state): axum::extract::State<AppState>,
     axum::extract::Path(id): axum::extract::Path<Uuid>,
@@ -185,6 +235,9 @@ pub async fn serve(addr: SocketAddr, state: AppState) -> anyhow::Result<()> {
         .route("/v1/sessions/:id/discovery/list", get(list_session_files))
         .route("/v1/sessions/:id/discovery/search", get(search_session_files))
         .route("/v1/sessions/:id/discovery/read", get(read_session_file))
+        .route("/v1/sessions/:id/files/write", post(write_session_file))
+        .route("/v1/sessions/:id/files/move", post(move_session_file))
+        .route("/v1/sessions/:id/files/delete", post(delete_session_file))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
