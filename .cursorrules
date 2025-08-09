@@ -1,0 +1,47 @@
+Repository working agreement for Cursor
+
+Planning-first policy for new features
+
+1) For any net-new feature or material scope expansion, planning happens before implementation.
+
+What the assistant must do
+
+- When the user asks to add/build/implement a new feature (e.g., new endpoint, service, job, UI, CLI, schema), do not write implementation code yet.
+- Propose and create a planning document under `docs/planning/` using the template at `docs/templates/FEATURE_PLANNING_TEMPLATE.md`.
+  - Filename format: `YYYY-MM-DD-feature-slug.md` (e.g., `2025-08-09-flight-scheduling-ui.md`).
+  - If the file does not exist, offer to create it and prefill from the template.
+- Guide the user to complete the plan collaboratively:
+  - Clarify requirements (functional/non-functional), high-level design, scope/milestones.
+  - Ensure the "High-level test interfaces" section is concrete at unit, integration, and (if applicable) end-to-end levels.
+- Block feature implementation until the plan is approved:
+  - Check the plan contains an "Approval" section with approver and date.
+  - If missing, ask the user to confirm approval or to tag a maintainer.
+- Once approved, implement according to the plan and ensure tests are added per the planned test interfaces.
+- Every PR must link the planning document and confirm the checklist in `.github/pull_request_template.md`.
+
+Exceptions
+
+- Small refactors and straightforward bug fixes do not require a planning doc.
+- If the scope is ambiguous, ask whether this is a new feature requiring planning.
+
+Operational conventions the assistant should follow
+
+- Branch naming: `feature/<feature-slug>` for feature work.
+- Planning doc contents must remain in sync with scope; if scope changes, update the doc and seek re-approval.
+- Prefer generating test scaffolds first (or in the same PR) based on the "High-level test interfaces" before or alongside implementation.
+- Cite or reference paths like `docs/planning/<filename>.md` and `docs/templates/FEATURE_PLANNING_TEMPLATE.md` in responses to anchor the process.
+
+Quality gates to enforce in dialogs and PRs
+
+- The PR must:
+  - Link to the planning doc
+  - Include tests matching the planned test interfaces
+  - Note any deviations from the plan
+  - Address compatibility/migration/rollout if relevant
+
+Tone & interaction
+
+- Be concise and directive. Ask the minimum set of questions required to complete the plan and proceed.
+- If the user requests code without a planning doc for a new feature, remind them of the policy and offer to generate the planning doc scaffold.
+
+

@@ -1,0 +1,39 @@
+---
+alwaysApply: true
+description: Central knowledge base policy — maintain and consult brain.md on every request
+---
+
+# Brain file policy (always applied)
+
+This workspace uses a single, concise knowledge base at [brain.md](mdc:brain.md) to capture all major information. Follow these rules on every request:
+
+- Consult brain.md at the start of each new goal. Treat it as the source of truth for context, conventions, and decisions.
+- If brain.md is missing, create it at the repository root with a minimal template and backfill known major information.
+- Keep brain.md up to date. When something major changes (architecture, processes, conventions, decisions, environments, owners, widely used commands), update brain.md in the same turn.
+- If brain.md appears out of date or conflicts with the codebase/repo rules, update it immediately and note the change succinctly.
+- Keep it concise and scannable. Prefer bullet points and short sections. Link to canonical docs instead of duplicating long content.
+
+Major information typically includes:
+
+- Project overview and purpose
+- High-level architecture and key components
+- Domain-wide conventions and policies (e.g., commits, testing, planning)
+- Processes and workflows that apply broadly (e.g., planning-first, PR checklist)
+- Environments/config high points and critical commands
+- Owners/approvers for plans and reviews (if applicable)
+
+Suggested structure for brain.md:
+
+- Purpose and scope
+- Current snapshot (architecture, processes, policies)
+- Conventions (commits, branching, tests)
+- Planning/approval pointers
+- Key commands and common tasks
+- Links to canonical docs (use mdc: paths)
+
+Operational guidance:
+
+- When finishing a feature slice or merging significant changes, update brain.md as part of that work.
+- Use Conventional Commits for edits to brain.md and related rules.
+- Use links like `[feature-planning.md](mdc:docs/process/feature-planning.md)` and `[FEATURE_PLANNING_TEMPLATE.md](mdc:docs/templates/FEATURE_PLANNING_TEMPLATE.md)` to anchor policies.
+

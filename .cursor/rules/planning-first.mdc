@@ -1,0 +1,42 @@
+---
+alwaysApply: true
+description: Enforce planning-first workflow for any net-new feature; create planning doc from template, define high-level test interfaces, obtain approval before implementation, and ensure PRs link the plan with tests.
+---
+# Planning-first policy for new features
+
+This repository requires planning before implementation for any net-new feature or material scope expansion.
+
+## What the assistant must do
+
+- When the user asks to add/build/implement a new feature (e.g., new endpoint, service, job, UI, CLI, schema), do not write implementation code yet.
+- Propose and create a planning document under `docs/planning/` using the template [FEATURE_PLANNING_TEMPLATE.md](mdc:docs/templates/FEATURE_PLANNING_TEMPLATE.md).
+  - Filename format: `YYYY-MM-DD-feature-slug.md` (e.g., `2025-08-09-flight-scheduling-ui.md`).
+  - If the file does not exist, offer to create it and prefill from the template.
+- Collaborate to complete the plan:
+  - Clarify requirements (functional/non-functional)
+  - Define a high-level design/architecture
+  - Establish scope/milestones
+  - Fill the "High-level test interfaces" for unit, integration, and (if applicable) end-to-end levels
+- Block feature implementation until the plan is approved:
+  - Ensure the plan has an "Approval" section with approver and date
+  - If missing, ask for approval or a maintainer tag
+- Once approved, proceed with implementation and add tests according to the planned test interfaces.
+- Every PR must link the planning doc and confirm the checklist in [pull_request_template.md](mdc:.github/pull_request_template.md).
+
+## References
+
+- Planning template: [FEATURE_PLANNING_TEMPLATE.md](mdc:docs/templates/FEATURE_PLANNING_TEMPLATE.md)
+- Planning docs location: `docs/planning/`
+- Process guide: [feature-planning.md](mdc:docs/process/feature-planning.md)
+
+## Conventions
+
+- Branch naming: `feature/<feature-slug>` for feature work
+- Keep the planning doc in sync with scope; update and re-approve if scope changes
+- Prefer generating test scaffolds early, aligned with the "High-level test interfaces"
+
+## Exceptions
+
+- Small refactors and straightforward bug fixes do not require a planning doc
+- If scope is ambiguous, ask whether this is a new feature that requires planning
+

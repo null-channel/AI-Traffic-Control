@@ -1,0 +1,60 @@
+---
+alwaysApply: true
+description: Enforce Conventional Commits and require creating a git commit at the end of each feature implementation with proper message structure and references.
+---
+# Conventional Commits and feature-end commit policy
+
+All commits must follow the Conventional Commits v1.0.0 style. When completing a feature implementation (per an approved plan), create a commit that includes all related changes.
+
+## Commit message format
+
+`<type>(<scope>): <short imperative summary>`
+
+- Types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`
+- Scope: optional; use the domain or component (e.g., `api`, `ui`, `flight-scheduling`)
+- Summary: imperative mood, concise
+
+Body (optional but recommended): explain the what/why at a high level. Reference planning and issues.
+
+Footer (optional):
+- `BREAKING CHANGE: <description>` when applicable
+- `Closes #<issue>` or `Refs #<issue>`
+
+## Policy
+
+- At the end of each feature implementation slice (as defined in the approved plan), stage all related changes and create a commit with a Conventional Commit message.
+- Include a link to the planning doc path in the commit body when applicable: e.g., `Plan: docs/planning/2025-08-09-feature-slug.md`.
+- Do not squash unrelated work into the same commit. Keep commits logically scoped.
+- If existing tests fail, fix the implementation rather than modifying existing tests (see [no-auto-tests.mdc](mdc:.cursor/rules/no-auto-tests.mdc)).
+
+## Examples
+
+```
+feat(flight-scheduling): add runway allocation service
+
+Introduce allocation policy and persistence adapter.
+Plan: docs/planning/2025-08-09-flight-scheduling-ui.md
+Refs #123
+```
+
+```
+fix(api): handle null altitude in flight patch endpoint
+
+Return 400 for invalid altitudes and add input validation.
+Refs #201
+```
+
+## Suggested commands (non-interactive)
+
+Use when finalizing a feature slice:
+
+```
+git add -A
+git commit -m "feat(scope): concise summary" -m "Body with Plan: docs/planning/YYYY-MM-DD-feature-slug.md"
+```
+
+## Related
+
+- Planning-first workflow: [FEATURE_PLANNING_TEMPLATE.md](mdc:docs/templates/FEATURE_PLANNING_TEMPLATE.md), [feature-planning.md](mdc:docs/process/feature-planning.md)
+- PR checklist: [pull_request_template.md](mdc:.github/pull_request_template.md)
+
