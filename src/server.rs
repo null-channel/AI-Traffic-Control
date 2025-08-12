@@ -13,6 +13,7 @@ use crate::file_ops::{write_file_under_root, move_file_under_root, delete_file_u
 use crate::git_ops::{status as git_status, diff_porcelain as git_diff, add_all as git_add_all, commit as git_commit};
 use crate::settings::{SessionSettings, SessionSettingsPatch};
 use url::Url;
+use metrics::Unit;
 
 #[derive(Clone, Default)]
 pub struct AppState {
@@ -35,6 +36,7 @@ async fn create_session(
     axum::extract::State(state): axum::extract::State<AppState>,
     Json(body): Json<CreateSessionBody>,
 ) -> Json<CreateSessionResponse> {
+    { let _ = metrics::counter!("http.requests", "path" => "/v1/sessions", "method" => "POST"); }
     let settings = body.settings.unwrap_or_default();
     let mut sessions = state.sessions.write().await;
     let session = Session::new(body.client_id, settings);
@@ -47,6 +49,7 @@ async fn delete_session(
     axum::extract::State(state): axum::extract::State<AppState>,
     axum::extract::Path(id): axum::extract::Path<Uuid>,
 ) -> Result<axum::http::StatusCode, axum::http::StatusCode> {
+    { let _ = metrics::counter!("http.requests", "path" => "/v1/sessions/:id", "method" => "DELETE"); }
     let mut sessions = state.sessions.write().await;
     let before = sessions.len();
     sessions.retain(|s| s.id != id);
@@ -65,6 +68,7 @@ pub struct ListSessionsResponse {
 async fn list_sessions(
     axum::extract::State(state): axum::extract::State<AppState>,
 ) -> Json<ListSessionsResponse> {
+    { let _ = metrics::counter!("http.requests", "path" => "/v1/sessions", "method" => "GET"); }
     let sessions = state.sessions.read().await;
     let ids = sessions.iter().map(|s| s.id).collect();
     Json(ListSessionsResponse { sessions: ids })
@@ -79,6 +83,7 @@ async fn get_session_settings(
     axum::extract::State(state): axum::extract::State<AppState>,
     axum::extract::Path(id): axum::extract::Path<Uuid>,
 ) -> Result<Json<SessionSettingsResponse>, StatusCode> {
+    { let _ = metrics::counter!("http.requests", "path" => "/v1/sessions/:id/settings", "method" => "GET"); }
     let sessions = state.sessions.read().await;
     if let Some(s) = sessions.iter().find(|s| s.id == id) {
         Ok(Json(SessionSettingsResponse { settings: s.settings.clone() }))
@@ -115,6 +120,7 @@ async fn get_session_history(
     axum::extract::Path(id): axum::extract::Path<Uuid>,
     Query(q): Query<HistoryQuery>,
 ) -> Result<Json<HistoryResponse>, StatusCode> {
+    { let _ = metrics::counter!("http.requests", "path" => "/v1/sessions/:id/history", "method" => "GET"); }
     let limit = q.limit.unwrap_or(50).min(200).max(1);
     let sessions = state.sessions.read().await;
     let s = sessions.iter().find(|s| s.id == id).ok_or(StatusCode::NOT_FOUND)?;
@@ -149,6 +155,7 @@ async fn post_session_message(
     axum::extract::Path(id): axum::extract::Path<Uuid>,
     Json(b): Json<PostMessageBody>,
 ) -> Result<Json<PostMessageResponse>, StatusCode> {
+    { let _ = metrics::counter!("http.requests", "path" => "/v1/sessions/:id/messages", "method" => "POST"); }
     // Resolve session and decide model
     let mut sessions = state.sessions.write().await;
     let s = sessions.iter_mut().find(|s| s.id == id).ok_or(StatusCode::NOT_FOUND)?;
@@ -193,6 +200,7 @@ async fn list_session_files(
     axum::extract::Path(id): axum::extract::Path<Uuid>,
     Query(q): Query<ListQuery>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
+    { let _ = metrics::counter!("http.requests", "path" => "/v1/sessions/:id/discovery/list", "method" => "GET"); }
     let sessions = state.sessions.read().await;
     let s = sessions.iter().find(|s| s.id == id).ok_or(StatusCode::NOT_FOUND)?;
     let root = s.settings.project_root.clone().ok_or(StatusCode::BAD_REQUEST)?;
@@ -209,6 +217,7 @@ async fn search_session_files(
     axum::extract::Path(id): axum::extract::Path<Uuid>,
     Query(q): Query<SearchQuery>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
+    { let _ = metrics::counter!("http.requests", "path" => "/v1/sessions/:id/discovery/search", "method" => "GET"); }
     let sessions = state.sessions.read().await;
     let s = sessions.iter().find(|s| s.id == id).ok_or(StatusCode::NOT_FOUND)?;
     let root = s.settings.project_root.clone().ok_or(StatusCode::BAD_REQUEST)?;
@@ -225,6 +234,7 @@ async fn read_session_file(
     axum::extract::Path(id): axum::extract::Path<Uuid>,
     Query(q): Query<ReadQuery>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
+    { let _ = metrics::counter!("http.requests", "path" => "/v1/sessions/:id/discovery/read", "method" => "GET"); }
     let sessions = state.sessions.read().await;
     let s = sessions.iter().find(|s| s.id == id).ok_or(StatusCode::NOT_FOUND)?;
     let root = s.settings.project_root.clone().ok_or(StatusCode::BAD_REQUEST)?;
@@ -241,6 +251,7 @@ async fn write_session_file(
     axum::extract::Path(id): axum::extract::Path<Uuid>,
     Json(b): Json<WriteBody>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
+    { let _ = metrics::counter!("http.requests", "path" => "/v1/sessions/:id/files/write", "method" => "POST"); }
     let sessions = state.sessions.read().await;
     let s = sessions.iter().find(|s| s.id == id).ok_or(StatusCode::NOT_FOUND)?;
     let root = s.settings.project_root.clone().ok_or(StatusCode::BAD_REQUEST)?;
@@ -258,6 +269,7 @@ async fn move_session_file(
     axum::extract::Path(id): axum::extract::Path<Uuid>,
     Json(b): Json<MoveBody>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
+    { let _ = metrics::counter!("http.requests", "path" => "/v1/sessions/:id/files/move", "method" => "POST"); }
     let sessions = state.sessions.read().await;
     let s = sessions.iter().find(|s| s.id == id).ok_or(StatusCode::NOT_FOUND)?;
     let root = s.settings.project_root.clone().ok_or(StatusCode::BAD_REQUEST)?;
@@ -274,6 +286,7 @@ async fn delete_session_file(
     axum::extract::Path(id): axum::extract::Path<Uuid>,
     Json(b): Json<DeleteBody>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
+    { let _ = metrics::counter!("http.requests", "path" => "/v1/sessions/:id/files/delete", "method" => "POST"); }
     let sessions = state.sessions.read().await;
     let s = sessions.iter().find(|s| s.id == id).ok_or(StatusCode::NOT_FOUND)?;
     let root = s.settings.project_root.clone().ok_or(StatusCode::BAD_REQUEST)?;
@@ -286,6 +299,7 @@ async fn get_git_status(
     axum::extract::State(state): axum::extract::State<AppState>,
     axum::extract::Path(id): axum::extract::Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
+    { let _ = metrics::counter!("http.requests", "path" => "/v1/sessions/:id/git/status", "method" => "GET"); }
     let sessions = state.sessions.read().await;
     let s = sessions.iter().find(|s| s.id == id).ok_or(StatusCode::NOT_FOUND)?;
     let root = s.settings.project_root.clone().ok_or(StatusCode::BAD_REQUEST)?;
@@ -297,6 +311,7 @@ async fn get_git_diff(
     axum::extract::State(state): axum::extract::State<AppState>,
     axum::extract::Path(id): axum::extract::Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
+    { let _ = metrics::counter!("http.requests", "path" => "/v1/sessions/:id/git/diff", "method" => "GET"); }
     let sessions = state.sessions.read().await;
     let s = sessions.iter().find(|s| s.id == id).ok_or(StatusCode::NOT_FOUND)?;
     let root = s.settings.project_root.clone().ok_or(StatusCode::BAD_REQUEST)?;
@@ -308,6 +323,7 @@ async fn post_git_add_all(
     axum::extract::State(state): axum::extract::State<AppState>,
     axum::extract::Path(id): axum::extract::Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
+    { let _ = metrics::counter!("http.requests", "path" => "/v1/sessions/:id/git/add_all", "method" => "POST"); }
     let sessions = state.sessions.read().await;
     let s = sessions.iter().find(|s| s.id == id).ok_or(StatusCode::NOT_FOUND)?;
     let root = s.settings.project_root.clone().ok_or(StatusCode::BAD_REQUEST)?;
@@ -323,6 +339,7 @@ async fn post_git_commit(
     axum::extract::Path(id): axum::extract::Path<Uuid>,
     Json(b): Json<CommitBody>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
+    { let _ = metrics::counter!("http.requests", "path" => "/v1/sessions/:id/git/commit", "method" => "POST"); }
     let sessions = state.sessions.read().await;
     let s = sessions.iter().find(|s| s.id == id).ok_or(StatusCode::NOT_FOUND)?;
     let root = s.settings.project_root.clone().ok_or(StatusCode::BAD_REQUEST)?;
@@ -335,6 +352,7 @@ async fn patch_session_settings(
     axum::extract::Path(id): axum::extract::Path<Uuid>,
     Json(patch): Json<SessionSettingsPatch>,
 ) -> Result<Json<SessionSettingsResponse>, StatusCode> {
+    { let _ = metrics::counter!("http.requests", "path" => "/v1/sessions/:id/settings", "method" => "PATCH"); }
     let mut sessions = state.sessions.write().await;
     if let Some(s) = sessions.iter_mut().find(|s| s.id == id) {
         s.settings.apply_patch(patch);
@@ -345,6 +363,7 @@ async fn patch_session_settings(
 }
 
 async fn healthz() -> Json<serde_json::Value> {
+    { let _ = metrics::counter!("http.requests", "path" => "/v1/healthz", "method" => "GET"); }
     Json(serde_json::json!({"ok": true}))
 }
 
@@ -380,6 +399,7 @@ async fn ingest_url(
     axum::extract::Path(id): axum::extract::Path<Uuid>,
     Json(b): Json<UrlIngestBody>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
+    { let _ = metrics::counter!("http.requests", "path" => "/v1/sessions/:id/context/url", "method" => "POST"); }
     let mut sessions = state.sessions.write().await;
     let s = sessions.iter_mut().find(|s| s.id == id).ok_or(StatusCode::NOT_FOUND)?;
     let parsed = Url::parse(&b.url).map_err(|_| StatusCode::BAD_REQUEST)?;
@@ -401,8 +421,15 @@ async fn ingest_url(
 }
 
 pub async fn serve(addr: SocketAddr, state: AppState) -> anyhow::Result<()> {
+    // Metrics setup
+    metrics::describe_counter!("http.requests", Unit::Count, "HTTP requests by path and method");
+    let recorder = metrics_exporter_prometheus::PrometheusBuilder::new()
+        .install_recorder()
+        .expect("install prometheus recorder");
+
     let app = Router::new()
         .route("/v1/healthz", get(healthz))
+        .route("/metrics", get(move || async move { recorder.render() }))
         .route("/v1/sessions", post(create_session).get(list_sessions))
         .route("/v1/sessions/:id/settings", get(get_session_settings).patch(patch_session_settings))
         .route("/v1/sessions/:id", delete(delete_session))
