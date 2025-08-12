@@ -8,6 +8,7 @@ mod settings;
 mod discovery;
 mod file_ops;
 mod git_ops;
+use serde_json::json;
 
 #[derive(Debug, Parser)]
 #[command(name = "air_traffic_control")] 
@@ -44,6 +45,7 @@ enum SessionCmd {
     SettingsGet(SessionIdArg),
     SettingsSet(SessionSettingsSetArgs),
     Send(SessionSendArgs),
+    Url(SessionUrlArgs),
     Close(SessionIdArg),
 }
 
@@ -117,6 +119,16 @@ struct SessionSendArgs {
     content: String,
     #[arg(long)]
     model: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct SessionUrlArgs {
+    #[command(flatten)]
+    id: SessionIdArg,
+    #[arg(long)]
+    url: String,
+    #[arg(long, default_value_t = 262144)]
+    max_bytes: usize,
 }
 
 #[derive(Debug, Args)]
@@ -232,6 +244,20 @@ async fn main() -> anyhow::Result<()> {
                     .json(&body)
                     .send()
                     .await?;
+                if !resp.status().is_success() { anyhow::bail!("server error: {}", resp.status()); }
+                let v: serde_json::Value = resp.json().await?;
+                println!("{}", serde_json::to_string_pretty(&v)?);
+            }
+            SessionCmd::Url(args) => {
+                let client = reqwest::Client::new();
+                let body = json!({ "url": args.url, "max_bytes": args.max_bytes });
+                let resp = client.post(format!("{}/v1/sessions/{}/context/url", args.id.server.server, args.id.id))
+                    .json(&body)
+                    .send()
+                    .await?;
+                if resp.status() == reqwest::StatusCode::FORBIDDEN {
+                    anyhow::bail!("host not allowlisted for this session");
+                }
                 if !resp.status().is_success() { anyhow::bail!("server error: {}", resp.status()); }
                 let v: serde_json::Value = resp.json().await?;
                 println!("{}", serde_json::to_string_pretty(&v)?);

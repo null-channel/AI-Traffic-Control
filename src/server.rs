@@ -11,6 +11,7 @@ use crate::discovery::{list_files, search_files, read_file_under_root};
 use crate::file_ops::{write_file_under_root, move_file_under_root, delete_file_under_root};
 use crate::git_ops::{status as git_status, diff_porcelain as git_diff, add_all as git_add_all, commit as git_commit};
 use crate::settings::{SessionSettings, SessionSettingsPatch};
+use url::Url;
 
 #[derive(Clone, Default)]
 pub struct AppState {
@@ -323,6 +324,58 @@ async fn healthz() -> Json<serde_json::Value> {
     Json(serde_json::json!({"ok": true}))
 }
 
+#[derive(Debug, Deserialize)]
+struct UrlIngestBody { url: String, max_bytes: Option<usize> }
+
+fn is_allowed_host(allowlist: &Option<Vec<String>>, host: &str) -> bool {
+    match allowlist {
+        None => false,
+        Some(list) => list.iter().any(|h| h == host),
+    }
+}
+
+async fn fetch_and_extract(url: &str, max_bytes: usize) -> anyhow::Result<String> {
+    let resp = reqwest::Client::new().get(url).send().await?;
+    let status = resp.status();
+    if !status.is_success() { anyhow::bail!("fetch failed: {}", status); }
+    let bytes = resp.bytes().await?;
+    let slice = if bytes.len() > max_bytes { &bytes[..max_bytes] } else { &bytes };
+    let html = String::from_utf8_lossy(slice).to_string();
+    let doc = scraper::Html::parse_document(&html);
+    let selector = scraper::Selector::parse("body").unwrap();
+    let mut text = String::new();
+    for el in doc.select(&selector) {
+        text.push_str(&el.text().collect::<Vec<_>>().join(" "));
+        text.push('\n');
+    }
+    if text.is_empty() { Ok(html) } else { Ok(text) }
+}
+
+async fn ingest_url(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    axum::extract::Path(id): axum::extract::Path<Uuid>,
+    Json(b): Json<UrlIngestBody>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut sessions = state.sessions.write().await;
+    let s = sessions.iter_mut().find(|s| s.id == id).ok_or(StatusCode::NOT_FOUND)?;
+    let parsed = Url::parse(&b.url).map_err(|_| StatusCode::BAD_REQUEST)?;
+    let host = parsed.host_str().ok_or(StatusCode::BAD_REQUEST)?;
+    if !is_allowed_host(&s.settings.network_allowlist, host) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let max_bytes = b.max_bytes.unwrap_or(256 * 1024).min(2 * 1024 * 1024);
+    let content = fetch_and_extract(&b.url, max_bytes).await.map_err(|_| StatusCode::BAD_REQUEST)?;
+    s.tool_history.push(crate::session::ToolEvent {
+        id: Uuid::new_v4(),
+        tool: "url".into(),
+        summary: format!("fetched {} ({} chars)", b.url, content.len()),
+        status: "ok".into(),
+        error: None,
+        created_at: chrono::Utc::now(),
+    });
+    Ok(Json(serde_json::json!({"url": b.url, "content": content})))
+}
+
 pub async fn serve(addr: SocketAddr, state: AppState) -> anyhow::Result<()> {
     let app = Router::new()
         .route("/v1/healthz", get(healthz))
@@ -341,6 +394,7 @@ pub async fn serve(addr: SocketAddr, state: AppState) -> anyhow::Result<()> {
         .route("/v1/sessions/:id/git/diff", get(get_git_diff))
         .route("/v1/sessions/:id/git/add_all", post(post_git_add_all))
         .route("/v1/sessions/:id/git/commit", post(post_git_commit))
+        .route("/v1/sessions/:id/context/url", post(ingest_url))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
