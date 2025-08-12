@@ -8,6 +8,7 @@ mod settings;
 mod discovery;
 mod file_ops;
 mod git_ops;
+mod models;
 use serde_json::json;
 
 #[derive(Debug, Parser)]

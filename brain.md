@@ -8,9 +8,10 @@ Concise, always-current knowledge base for major project information. Keep this 
 ## Current snapshot
 
 - Architecture: Headless Rust AI coding agent skeleton in place. HTTP API via `axum`; CLI via `clap`.
-  - Implemented HTTP endpoints: healthz, sessions create/list/delete, session settings get/patch, session history (messages/tools pagination), session message posting (stores summary), discovery (list/search/read), files (write/move/delete with dry-run), git (status/diff/add_all/commit), URL ingestion with allowlist + readability extraction.
+  - Implemented HTTP endpoints: healthz, sessions create/list/delete, session settings get/patch, session history (messages/tools pagination), session message posting (stores summary + calls model if configured), discovery (list/search/read), files (write/move/delete with dry-run), git (status/diff/add_all/commit), URL ingestion with allowlist + readability extraction.
   - Implemented CLI commands: `start`, `session` (create/list/settings get|set/send/url/close), `git` (status/diff/add-all/commit), `discovery` (list/search/read), `files` (write/move/delete).
-  - Pending (MVP): model provider integration + selection, basic metrics.
+  - Model provider: `LanguageModel` trait and OpenAI-compatible adapter via `OPENAI_BASE_URL`/`OPENAI_API_KEY`; simple `ModelSelector`.
+  - Pending (MVP): basic metrics.
 - Processes and policies:
   - Conventional Commits required. See `.cursor/rules/conventional-commits.mdc`.
   - Planning-first policy for new features. See `docs/process/feature-planning.md` and template `docs/templates/FEATURE_PLANNING_TEMPLATE.md`.

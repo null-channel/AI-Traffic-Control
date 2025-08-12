@@ -7,6 +7,7 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use crate::session::Session;
+use crate::models::{LanguageModel, ModelRequest, OpenAICompatible, ModelSelector};
 use crate::discovery::{list_files, search_files, read_file_under_root};
 use crate::file_ops::{write_file_under_root, move_file_under_root, delete_file_under_root};
 use crate::git_ops::{status as git_status, diff_porcelain as git_diff, add_all as git_add_all, commit as git_commit};
@@ -16,6 +17,7 @@ use url::Url;
 #[derive(Clone, Default)]
 pub struct AppState {
     pub sessions: Arc<RwLock<Vec<Session>>>,
+    pub model: Option<OpenAICompatible>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -147,17 +149,39 @@ async fn post_session_message(
     axum::extract::Path(id): axum::extract::Path<Uuid>,
     Json(b): Json<PostMessageBody>,
 ) -> Result<Json<PostMessageResponse>, StatusCode> {
+    // Resolve session and decide model
     let mut sessions = state.sessions.write().await;
     let s = sessions.iter_mut().find(|s| s.id == id).ok_or(StatusCode::NOT_FOUND)?;
-    let msg = crate::session::Message {
+    let selected = ModelSelector::select(b.model.clone(), s.settings.default_model.clone(), None);
+
+    // Append user message summary
+    let user_msg = crate::session::Message {
         id: Uuid::new_v4(),
         role: b.role.clone().unwrap_or_else(|| "user".into()),
         content_summary: summarize(&b.content, 200),
-        model_used: b.model.clone(),
+        model_used: selected.clone(),
         created_at: chrono::Utc::now(),
     };
-    let resp = PostMessageResponse { id: msg.id, role: msg.role.clone(), content_summary: msg.content_summary.clone(), model_used: msg.model_used.clone() };
-    s.messages.push(msg);
+    s.messages.push(user_msg.clone());
+
+    // Call model if configured
+    if let Some(model) = &state.model {
+        if let Some(model_name) = selected.clone() {
+            let req = ModelRequest { model: model_name.clone(), prompt: b.content.clone(), temperature: s.settings.model_params.as_ref().and_then(|p| p.temperature), max_tokens: s.settings.model_params.as_ref().and_then(|p| p.max_tokens), top_p: s.settings.model_params.as_ref().and_then(|p| p.top_p) };
+            match model.generate(req).await {
+                Ok(r) => {
+                    // store assistant message summary
+                    let as_msg = crate::session::Message { id: Uuid::new_v4(), role: "assistant".into(), content_summary: summarize(&r.content, 200), model_used: Some(r.model.clone()), created_at: chrono::Utc::now() };
+                    s.messages.push(as_msg);
+                }
+                Err(e) => {
+                    s.tool_history.push(crate::session::ToolEvent { id: Uuid::new_v4(), tool: "model".into(), summary: format!("error: {}", e), status: "error".into(), error: Some(e.to_string()), created_at: chrono::Utc::now() });
+                }
+            }
+        }
+    }
+
+    let resp = PostMessageResponse { id: user_msg.id, role: user_msg.role, content_summary: user_msg.content_summary, model_used: selected };
     Ok(Json(resp))
 }
 
