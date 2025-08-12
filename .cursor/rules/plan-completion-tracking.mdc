@@ -1,0 +1,27 @@
+---
+alwaysApply: true
+description: Require marking completed feature plans in the plan doc and in brain.md
+---
+
+# Plan completion tracking policy
+
+When a feature implementation that corresponds to an approved planning doc is complete, mark completion in both places:
+
+- Plan doc update (required):
+  - File: `docs/planning/YYYY-MM-DD-feature-slug.md`
+  - Under the "### 12. Approval" section, append a line: `Status: Completed (YYYY-MM-DD)`.
+  - Optionally add: `Implementation PR(s): <links>`.
+
+- Brain update (required):
+  - File: `brain.md`
+  - Add an entry under "Completed plans" with: date, link to the plan, and a one-line description.
+    - Example: `2025-08-12 — [2025-08-12-session-persistence-sqlite.md](mdc:docs/planning/2025-08-12-session-persistence-sqlite.md) — Persist sessions to SQLite`
+
+- Commit guidance (Conventional Commits):
+  - `docs(rules): mark plan as completed in plan doc and brain.md`
+  - Body may include: `Plan: docs/planning/YYYY-MM-DD-feature-slug.md`
+
+Quality gate:
+
+- A PR that claims completion for a planned feature must show both updates: the plan doc status and the `brain.md` entry.
+

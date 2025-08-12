@@ -16,6 +16,7 @@ Concise, always-current knowledge base for major project information. Keep this 
   - Conventional Commits required. See `.cursor/rules/conventional-commits.mdc`.
   - Planning-first policy for new features. See `docs/process/feature-planning.md` and template `docs/templates/FEATURE_PLANNING_TEMPLATE.md`.
   - Tests: new tests allowed; existing tests immutable. See `.cursor/rules/no-auto-tests.mdc`.
+  - Plan completion tracking: when implementation for an approved plan is done, mark the plan doc `Status: Completed (YYYY-MM-DD)` and add an entry under "Completed plans" below.
 
 ## Conventions
 
@@ -43,9 +44,16 @@ Concise, always-current knowledge base for major project information. Keep this 
 - Planning template: [FEATURE_PLANNING_TEMPLATE.md](mdc:docs/templates/FEATURE_PLANNING_TEMPLATE.md)
 - Conventional commits rule: [.cursor/rules/conventional-commits.mdc](mdc:.cursor/rules/conventional-commits.mdc)
 - No-auto-tests rule: [.cursor/rules/no-auto-tests.mdc](mdc:.cursor/rules/no-auto-tests.mdc)
+ - Plan completion rule: [.cursor/rules/plan-completion-tracking.mdc](mdc:.cursor/rules/plan-completion-tracking.mdc)
 
 ## Ownership
 
 - Approver(s): TBD. Add maintainer names/handles here when defined.
+
+
+## Completed plans
+
+- Add entries here as plans are completed, for example:
+  - 2025-08-12 — [2025-08-12-session-persistence-sqlite.md](mdc:docs/planning/2025-08-12-session-persistence-sqlite.md) — Persist sessions to SQLite
 
 
