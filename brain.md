@@ -7,7 +7,10 @@ Concise, always-current knowledge base for major project information. Keep this 
 
 ## Current snapshot
 
-- Architecture: Planning underway for a headless Rust AI coding agent with multi-session orchestration, pluggable model providers, and core tools (discovery, file manipulation, git). Update when code is added.
+- Architecture: Headless Rust AI coding agent skeleton in place. HTTP API via `axum`; CLI via `clap`.
+  - Implemented HTTP endpoints: sessions create/list, session settings get/patch, session history (messages/tools pagination), discovery (list/search/read), files (write/move/delete with dry-run), git (status/diff/add_all/commit).
+  - Implemented CLI commands: `start`, `git` (status/diff/add-all/commit), `discovery` (list/search/read), `files` (write/move/delete).
+  - Pending (MVP): message posting + model integration/selection, `/v1/healthz`, session delete endpoint, CLI `session` commands, URL ingestion, basic metrics.
 - Processes and policies:
   - Conventional Commits required. See `.cursor/rules/conventional-commits.mdc`.
   - Planning-first policy for new features. See `docs/process/feature-planning.md` and template `docs/templates/FEATURE_PLANNING_TEMPLATE.md`.

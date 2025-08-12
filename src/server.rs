@@ -1,4 +1,4 @@
-use axum::{routing::{get, patch, post}, Json, Router};
+use axum::{routing::{get, patch, post, delete}, Json, Router};
 use axum::extract::Query;
 use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
@@ -9,6 +9,7 @@ use uuid::Uuid;
 use crate::session::Session;
 use crate::discovery::{list_files, search_files, read_file_under_root};
 use crate::file_ops::{write_file_under_root, move_file_under_root, delete_file_under_root};
+use crate::git_ops::{status as git_status, diff_porcelain as git_diff, add_all as git_add_all, commit as git_commit};
 use crate::settings::{SessionSettings, SessionSettingsPatch};
 
 #[derive(Clone, Default)]
@@ -37,6 +38,20 @@ async fn create_session(
     let id = session.id;
     sessions.push(session);
     Json(CreateSessionResponse { id })
+}
+
+async fn delete_session(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    axum::extract::Path(id): axum::extract::Path<Uuid>,
+) -> Result<axum::http::StatusCode, axum::http::StatusCode> {
+    let mut sessions = state.sessions.write().await;
+    let before = sessions.len();
+    sessions.retain(|s| s.id != id);
+    if sessions.len() < before {
+        Ok(axum::http::StatusCode::NO_CONTENT)
+    } else {
+        Err(axum::http::StatusCode::NOT_FOUND)
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -114,6 +129,35 @@ async fn get_session_history(
         }
         _ => Err(StatusCode::BAD_REQUEST),
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct PostMessageBody { role: Option<String>, content: String, model: Option<String> }
+
+#[derive(Debug, Serialize)]
+struct PostMessageResponse { id: Uuid, role: String, content_summary: String, model_used: Option<String> }
+
+fn summarize(content: &str, max: usize) -> String {
+    if content.len() <= max { content.to_string() } else { format!("{}…", &content[..max]) }
+}
+
+async fn post_session_message(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    axum::extract::Path(id): axum::extract::Path<Uuid>,
+    Json(b): Json<PostMessageBody>,
+) -> Result<Json<PostMessageResponse>, StatusCode> {
+    let mut sessions = state.sessions.write().await;
+    let s = sessions.iter_mut().find(|s| s.id == id).ok_or(StatusCode::NOT_FOUND)?;
+    let msg = crate::session::Message {
+        id: Uuid::new_v4(),
+        role: b.role.clone().unwrap_or_else(|| "user".into()),
+        content_summary: summarize(&b.content, 200),
+        model_used: b.model.clone(),
+        created_at: chrono::Utc::now(),
+    };
+    let resp = PostMessageResponse { id: msg.id, role: msg.role.clone(), content_summary: msg.content_summary.clone(), model_used: msg.model_used.clone() };
+    s.messages.push(msg);
+    Ok(Json(resp))
 }
 
 #[derive(Debug, Deserialize)]
@@ -213,6 +257,54 @@ async fn delete_session_file(
     Ok(Json(serde_json::to_value(res).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?))
 }
 
+async fn get_git_status(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    axum::extract::Path(id): axum::extract::Path<Uuid>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let sessions = state.sessions.read().await;
+    let s = sessions.iter().find(|s| s.id == id).ok_or(StatusCode::NOT_FOUND)?;
+    let root = s.settings.project_root.clone().ok_or(StatusCode::BAD_REQUEST)?;
+    let st = git_status(&root).map_err(|_| StatusCode::BAD_REQUEST)?;
+    Ok(Json(serde_json::to_value(st).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?))
+}
+
+async fn get_git_diff(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    axum::extract::Path(id): axum::extract::Path<Uuid>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let sessions = state.sessions.read().await;
+    let s = sessions.iter().find(|s| s.id == id).ok_or(StatusCode::NOT_FOUND)?;
+    let root = s.settings.project_root.clone().ok_or(StatusCode::BAD_REQUEST)?;
+    let d = git_diff(&root).map_err(|_| StatusCode::BAD_REQUEST)?;
+    Ok(Json(serde_json::json!({"diff": d})))
+}
+
+async fn post_git_add_all(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    axum::extract::Path(id): axum::extract::Path<Uuid>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let sessions = state.sessions.read().await;
+    let s = sessions.iter().find(|s| s.id == id).ok_or(StatusCode::NOT_FOUND)?;
+    let root = s.settings.project_root.clone().ok_or(StatusCode::BAD_REQUEST)?;
+    git_add_all(&root).map_err(|_| StatusCode::BAD_REQUEST)?;
+    Ok(Json(serde_json::json!({"ok": true})))
+}
+
+#[derive(Debug, Deserialize)]
+struct CommitBody { message: String }
+
+async fn post_git_commit(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    axum::extract::Path(id): axum::extract::Path<Uuid>,
+    Json(b): Json<CommitBody>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let sessions = state.sessions.read().await;
+    let s = sessions.iter().find(|s| s.id == id).ok_or(StatusCode::NOT_FOUND)?;
+    let root = s.settings.project_root.clone().ok_or(StatusCode::BAD_REQUEST)?;
+    let oid = git_commit(&root, &b.message).map_err(|_| StatusCode::BAD_REQUEST)?;
+    Ok(Json(serde_json::json!({"commit": oid})))
+}
+
 async fn patch_session_settings(
     axum::extract::State(state): axum::extract::State<AppState>,
     axum::extract::Path(id): axum::extract::Path<Uuid>,
@@ -227,10 +319,17 @@ async fn patch_session_settings(
     }
 }
 
+async fn healthz() -> Json<serde_json::Value> {
+    Json(serde_json::json!({"ok": true}))
+}
+
 pub async fn serve(addr: SocketAddr, state: AppState) -> anyhow::Result<()> {
     let app = Router::new()
+        .route("/v1/healthz", get(healthz))
         .route("/v1/sessions", post(create_session).get(list_sessions))
         .route("/v1/sessions/:id/settings", get(get_session_settings).patch(patch_session_settings))
+        .route("/v1/sessions/:id", delete(delete_session))
+        .route("/v1/sessions/:id/messages", post(post_session_message))
         .route("/v1/sessions/:id/history", get(get_session_history))
         .route("/v1/sessions/:id/discovery/list", get(list_session_files))
         .route("/v1/sessions/:id/discovery/search", get(search_session_files))
@@ -238,6 +337,10 @@ pub async fn serve(addr: SocketAddr, state: AppState) -> anyhow::Result<()> {
         .route("/v1/sessions/:id/files/write", post(write_session_file))
         .route("/v1/sessions/:id/files/move", post(move_session_file))
         .route("/v1/sessions/:id/files/delete", post(delete_session_file))
+        .route("/v1/sessions/:id/git/status", get(get_git_status))
+        .route("/v1/sessions/:id/git/diff", get(get_git_diff))
+        .route("/v1/sessions/:id/git/add_all", post(post_git_add_all))
+        .route("/v1/sessions/:id/git/commit", post(post_git_commit))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;

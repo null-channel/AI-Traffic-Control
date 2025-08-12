@@ -172,7 +172,7 @@
 
 ### 12. Approval
 
-- Approved by: <!-- maintainer(s) -->
-- Approval date:
+- Approved by: Marek Counts
+- Approval date: Today
 
 
