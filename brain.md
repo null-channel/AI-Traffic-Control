@@ -54,6 +54,8 @@ Concise, always-current knowledge base for major project information. Keep this 
 ## Completed plans
 
 - Add entries here as plans are completed, for example:
-  - 2025-08-12 — [2025-08-12-session-persistence-sqlite.md](mdc:docs/planning/2025-08-12-session-persistence-sqlite.md) — Persist sessions to SQLite
+  - 2025-08-12 — [2025-08-12-session-persistence-sqlite.md](mdc:docs/planning/2025-08-12-session-persistence-sqlite.md) — Persist sessions to SQLite (Completed 2025-08-13)
+  
+ - 2025-08-09 — [2025-08-09-coding-agent-mvp.md](mdc:docs/planning/2025-08-09-coding-agent-mvp.md) — Coding agent MVP foundation implemented (HTTP API, CLI, sessions, discovery, file ops, git ops, model adapter, metrics)
 
 

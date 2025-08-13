@@ -9,6 +9,7 @@ mod discovery;
 mod file_ops;
 mod git_ops;
 mod models;
+mod storage;
 use serde_json::json;
 
 #[derive(Debug, Parser)]
@@ -182,7 +183,9 @@ async fn main() -> anyhow::Result<()> {
     match cli.command {
         Commands::Start { listen } => {
             let addr: SocketAddr = listen.parse()?;
-            let state = server::AppState::default();
+            // Initialize SQLite repository (DATABASE_URL or default path)
+            let repo = storage::SqliteSessionRepository::initialize(std::env::var("DATABASE_URL").ok()).await?;
+            let state = server::AppState { repo: std::sync::Arc::new(repo), model: None };
             server::serve(addr, state).await?;
         }
         Commands::Session { cmd } => match cmd {

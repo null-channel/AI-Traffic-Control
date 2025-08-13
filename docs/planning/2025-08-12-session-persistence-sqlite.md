@@ -26,6 +26,7 @@
   - Multi-tenant sharding or external databases (Postgres, MySQL).
   - Full-text search over content.
   - Complex caching beyond straightforward read-through.
+  - Vector memory, embeddings, RAG, or semantic retrieval (per-session or global). This will be addressed in a separate plan.
 
 ### 4. Stakeholders and reviewers
 
@@ -46,17 +47,19 @@
   - Concurrency: Support typical single-process concurrent requests via tokio; avoid long write locks; set busy timeout.
   - Observability: Error logs and metrics for DB ops (success/failure counters, latencies if feasible).
   - Migration: Versioned migrations from 0001.
+  - Retention: No pruning by default; data retained indefinitely unless explicitly deleted.
 
 ### 6. High-level design
 
 - Architecture overview
   - Introduce `storage` module exposing a `SessionRepository` trait.
   - Provide `SqliteSessionRepository` using `sqlx` (async) with SQLite driver.
-  - Configure DB via env/config: `DATABASE_URL` (e.g., `sqlite:///var/lib/atc/atc.db`).
+  - Configure DB via env/config: use `DATABASE_URL` when set; otherwise resolve default path using `XDG_DATA_HOME` if present, else `~/.local/share/air_traffic_control/atc.db`.
   - Initialize DB at process start: open pool, set pragmas (WAL, busy_timeout), run migrations.
-  - Replace direct in-memory usage with repository calls. Optionally maintain a thin in-memory cache for hot reads but source of truth is DB.
+  - Persistence enabled by default with the resolved path. Replace direct in-memory usage with repository calls. Optionally maintain a thin in-memory cache for hot reads but source of truth is DB.
+  - Prompt context strategy (for now): build prompts from the most recent N messages for the session (and/or a running summary). No vector retrieval in this feature.
 - Data flows and components
-  - HTTP/CLI handlers -> `SessionService` (if present) -> `SessionRepository` -> SQLite.
+  - HTTP/CLI handlers -> `SessionRepository` -> SQLite.
 - Data model / schema
   - `sessions`:
     - `id` TEXT PRIMARY KEY (UUID v4)
@@ -67,7 +70,7 @@
     - `id` TEXT PRIMARY KEY
     - `session_id` TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE
     - `role` TEXT NOT NULL
-    - `content_summary` TEXT NOT NULL
+    - `content_summary` TEXT NOT NULL (only summary is stored at this stage)
     - `model_used` TEXT NULL
     - `created_at` TEXT NOT NULL
     - INDEX on `session_id, created_at`
@@ -89,7 +92,7 @@
   - Add `sqlx` (with `sqlite`, `chrono`, `uuid` features) and create `storage` module with `SessionRepository` trait.
   - Add migrations under `migrations/0001_init.sql` creating the 3 tables above.
   - Implement `SqliteSessionRepository` with CRUD and append operations.
-  - Config: `DATABASE_URL` and on-disk default path if unset (e.g., `~/.config/air_traffic_control/atc.db`). Enable WAL and busy timeout.
+  - Config: persistence enabled by default. If `DATABASE_URL` is unset, use `XDG_DATA_HOME`/`air_traffic_control/atc.db` or fallback to `~/.local/share/air_traffic_control/atc.db`. Enable WAL and busy timeout.
   - Unit and integration tests against a temp SQLite file.
 - Milestone 2:
   - Wire HTTP/CLI paths to repository. Remove in-memory source-of-truth; map domain structs to DB rows.
@@ -123,7 +126,7 @@
 ### 9. Risks and mitigations
 
 - Risk: SQLite write lock contention under bursts.
-  - Mitigation: WAL mode, short transactions, tuned busy timeout, potential queueing in service layer.
+  - Mitigation: WAL mode, short transactions, tuned busy timeout, potential lightweight operation queueing if needed.
 - Risk: Data corruption from sudden power loss.
   - Mitigation: Use default synchronous=FULL (or NORMAL if performance needs) and document trade-offs.
 - Risk: Schema evolution complexity.
@@ -131,19 +134,26 @@
 
 ### 10. Rollout and adoption
 
-- Feature flags / config: Enable persistence when `DATABASE_URL` is present; default to a sane local path. Log mode at startup.
+- Feature flags / config: Persistence is enabled by default. If `DATABASE_URL` is unset, resolve the default DB path using `XDG_DATA_HOME` or fallback to `~/.local/share/air_traffic_control/atc.db`. Log the resolved path and DB mode at startup.
 - Backwards compatibility / migrations: New installs run 0001. No prior data to migrate (in-memory only).
 - Observability: Add counters for repo ops and error logs; expose via existing Prometheus exporter.
+ - Retention: No pruning by default; future retention policies can be introduced without breaking schema.
 
 ### 11. Open questions
 
-- Store only `content_summary` (current behavior) or full message content in future?
-- Desired default DB path and permissions? System dir vs project workspace.
-- Any retention policy (e.g., max sessions or pruning)?
+- None for now.
+
+### 13. Future work
+
+- Session and global vector memory (separate plan):
+  - Per-session vector index for local conversational memory; optional global index for shared knowledge.
+  - Persist embeddings and metadata in SQLite; rebuild an in-memory ANN index on startup for fast recall.
+  - Define retrieval strategies and prompt assembly rules; evaluate costs and privacy.
 
 ### 12. Approval
 
-- Approved by: <!-- maintainer(s) -->
-- Approval date:
+- Approved by: @marek
+- Approval date: 2025-08-12
+- Status: Completed (2025-08-13)
 
 

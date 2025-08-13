@@ -1,12 +1,10 @@
-use axum::{routing::{get, patch, post, delete}, Json, Router};
+use axum::{routing::{get, post, delete}, Json, Router};
 use axum::extract::Query;
 use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 use std::{net::SocketAddr, sync::Arc};
-use tokio::sync::RwLock;
 use uuid::Uuid;
 
-use crate::session::Session;
 use crate::models::{LanguageModel, ModelRequest, OpenAICompatible, ModelSelector};
 use crate::discovery::{list_files, search_files, read_file_under_root};
 use crate::file_ops::{write_file_under_root, move_file_under_root, delete_file_under_root};
@@ -14,10 +12,12 @@ use crate::git_ops::{status as git_status, diff_porcelain as git_diff, add_all a
 use crate::settings::{SessionSettings, SessionSettingsPatch};
 use url::Url;
 use metrics::Unit;
+use crate::storage::{SqliteSessionRepository, SessionRepository};
+use chrono::Utc;
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct AppState {
-    pub sessions: Arc<RwLock<Vec<Session>>>,
+    pub repo: Arc<SqliteSessionRepository>,
     pub model: Option<OpenAICompatible>,
 }
 
@@ -38,10 +38,7 @@ async fn create_session(
 ) -> Json<CreateSessionResponse> {
     { let _ = metrics::counter!("http.requests", "path" => "/v1/sessions", "method" => "POST"); }
     let settings = body.settings.unwrap_or_default();
-    let mut sessions = state.sessions.write().await;
-    let session = Session::new(body.client_id, settings);
-    let id = session.id;
-    sessions.push(session);
+    let id = state.repo.create_session(body.client_id.clone(), settings).await.expect("create session");
     Json(CreateSessionResponse { id })
 }
 
@@ -50,10 +47,8 @@ async fn delete_session(
     axum::extract::Path(id): axum::extract::Path<Uuid>,
 ) -> Result<axum::http::StatusCode, axum::http::StatusCode> {
     { let _ = metrics::counter!("http.requests", "path" => "/v1/sessions/:id", "method" => "DELETE"); }
-    let mut sessions = state.sessions.write().await;
-    let before = sessions.len();
-    sessions.retain(|s| s.id != id);
-    if sessions.len() < before {
+    let ok = state.repo.delete_session(id).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if ok {
         Ok(axum::http::StatusCode::NO_CONTENT)
     } else {
         Err(axum::http::StatusCode::NOT_FOUND)
@@ -69,8 +64,7 @@ async fn list_sessions(
     axum::extract::State(state): axum::extract::State<AppState>,
 ) -> Json<ListSessionsResponse> {
     { let _ = metrics::counter!("http.requests", "path" => "/v1/sessions", "method" => "GET"); }
-    let sessions = state.sessions.read().await;
-    let ids = sessions.iter().map(|s| s.id).collect();
+    let ids = state.repo.list_sessions().await.unwrap_or_default();
     Json(ListSessionsResponse { sessions: ids })
 }
 
@@ -84,12 +78,8 @@ async fn get_session_settings(
     axum::extract::Path(id): axum::extract::Path<Uuid>,
 ) -> Result<Json<SessionSettingsResponse>, StatusCode> {
     { let _ = metrics::counter!("http.requests", "path" => "/v1/sessions/:id/settings", "method" => "GET"); }
-    let sessions = state.sessions.read().await;
-    if let Some(s) = sessions.iter().find(|s| s.id == id) {
-        Ok(Json(SessionSettingsResponse { settings: s.settings.clone() }))
-    } else {
-        Err(StatusCode::NOT_FOUND)
-    }
+    let s = state.repo.get_session(id).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    match s { Some(sess) => Ok(Json(SessionSettingsResponse { settings: sess.settings })), None => Err(StatusCode::NOT_FOUND) }
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -122,8 +112,7 @@ async fn get_session_history(
 ) -> Result<Json<HistoryResponse>, StatusCode> {
     { let _ = metrics::counter!("http.requests", "path" => "/v1/sessions/:id/history", "method" => "GET"); }
     let limit = q.limit.unwrap_or(50).min(200).max(1);
-    let sessions = state.sessions.read().await;
-    let s = sessions.iter().find(|s| s.id == id).ok_or(StatusCode::NOT_FOUND)?;
+    let s = state.repo.get_session(id).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?.ok_or(StatusCode::NOT_FOUND)?;
 
     match q.kind.as_str() {
         "messages" => {
@@ -157,8 +146,7 @@ async fn post_session_message(
 ) -> Result<Json<PostMessageResponse>, StatusCode> {
     { let _ = metrics::counter!("http.requests", "path" => "/v1/sessions/:id/messages", "method" => "POST"); }
     // Resolve session and decide model
-    let mut sessions = state.sessions.write().await;
-    let s = sessions.iter_mut().find(|s| s.id == id).ok_or(StatusCode::NOT_FOUND)?;
+    let s = state.repo.get_session(id).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?.ok_or(StatusCode::NOT_FOUND)?;
     let selected = ModelSelector::select(b.model.clone(), s.settings.default_model.clone(), None);
 
     // Append user message summary
@@ -167,9 +155,9 @@ async fn post_session_message(
         role: b.role.clone().unwrap_or_else(|| "user".into()),
         content_summary: summarize(&b.content, 200),
         model_used: selected.clone(),
-        created_at: chrono::Utc::now(),
+        created_at: Utc::now(),
     };
-    s.messages.push(user_msg.clone());
+    state.repo.append_message(id, user_msg.clone()).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     // Call model if configured
     if let Some(model) = &state.model {
@@ -178,11 +166,11 @@ async fn post_session_message(
             match model.generate(req).await {
                 Ok(r) => {
                     // store assistant message summary
-                    let as_msg = crate::session::Message { id: Uuid::new_v4(), role: "assistant".into(), content_summary: summarize(&r.content, 200), model_used: Some(r.model.clone()), created_at: chrono::Utc::now() };
-                    s.messages.push(as_msg);
+                    let as_msg = crate::session::Message { id: Uuid::new_v4(), role: "assistant".into(), content_summary: summarize(&r.content, 200), model_used: Some(r.model.clone()), created_at: Utc::now() };
+                    state.repo.append_message(id, as_msg).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
                 }
                 Err(e) => {
-                    s.tool_history.push(crate::session::ToolEvent { id: Uuid::new_v4(), tool: "model".into(), summary: format!("error: {}", e), status: "error".into(), error: Some(e.to_string()), created_at: chrono::Utc::now() });
+                    state.repo.append_tool_event(id, crate::session::ToolEvent { id: Uuid::new_v4(), tool: "model".into(), summary: format!("error: {}", e), status: "error".into(), error: Some(e.to_string()), created_at: Utc::now() }).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
                 }
             }
         }
@@ -201,8 +189,7 @@ async fn list_session_files(
     Query(q): Query<ListQuery>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     { let _ = metrics::counter!("http.requests", "path" => "/v1/sessions/:id/discovery/list", "method" => "GET"); }
-    let sessions = state.sessions.read().await;
-    let s = sessions.iter().find(|s| s.id == id).ok_or(StatusCode::NOT_FOUND)?;
+    let s = state.repo.get_session(id).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?.ok_or(StatusCode::NOT_FOUND)?;
     let root = s.settings.project_root.clone().ok_or(StatusCode::BAD_REQUEST)?;
     let items = list_files(&root, q.max.unwrap_or(500));
     let v = serde_json::to_value(items).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -218,8 +205,7 @@ async fn search_session_files(
     Query(q): Query<SearchQuery>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     { let _ = metrics::counter!("http.requests", "path" => "/v1/sessions/:id/discovery/search", "method" => "GET"); }
-    let sessions = state.sessions.read().await;
-    let s = sessions.iter().find(|s| s.id == id).ok_or(StatusCode::NOT_FOUND)?;
+    let s = state.repo.get_session(id).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?.ok_or(StatusCode::NOT_FOUND)?;
     let root = s.settings.project_root.clone().ok_or(StatusCode::BAD_REQUEST)?;
     let items = search_files(&root, &q.pattern, q.max.unwrap_or(500));
     let v = serde_json::to_value(items).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -235,8 +221,7 @@ async fn read_session_file(
     Query(q): Query<ReadQuery>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     { let _ = metrics::counter!("http.requests", "path" => "/v1/sessions/:id/discovery/read", "method" => "GET"); }
-    let sessions = state.sessions.read().await;
-    let s = sessions.iter().find(|s| s.id == id).ok_or(StatusCode::NOT_FOUND)?;
+    let s = state.repo.get_session(id).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?.ok_or(StatusCode::NOT_FOUND)?;
     let root = s.settings.project_root.clone().ok_or(StatusCode::BAD_REQUEST)?;
     let content = read_file_under_root(&root, &q.path, q.max_bytes.unwrap_or(64 * 1024))
         .map_err(|_| StatusCode::BAD_REQUEST)?;
@@ -252,8 +237,7 @@ async fn write_session_file(
     Json(b): Json<WriteBody>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     { let _ = metrics::counter!("http.requests", "path" => "/v1/sessions/:id/files/write", "method" => "POST"); }
-    let sessions = state.sessions.read().await;
-    let s = sessions.iter().find(|s| s.id == id).ok_or(StatusCode::NOT_FOUND)?;
+    let s = state.repo.get_session(id).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?.ok_or(StatusCode::NOT_FOUND)?;
     let root = s.settings.project_root.clone().ok_or(StatusCode::BAD_REQUEST)?;
     let dry_run = b.dry_run.unwrap_or_else(|| s.settings.tool_policies.as_ref().and_then(|p| p.dry_run).unwrap_or(true));
     let res = write_file_under_root(&root, &b.path, &b.content, b.create.unwrap_or(true), dry_run, b.preview_bytes.unwrap_or(1024))
@@ -270,8 +254,7 @@ async fn move_session_file(
     Json(b): Json<MoveBody>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     { let _ = metrics::counter!("http.requests", "path" => "/v1/sessions/:id/files/move", "method" => "POST"); }
-    let sessions = state.sessions.read().await;
-    let s = sessions.iter().find(|s| s.id == id).ok_or(StatusCode::NOT_FOUND)?;
+    let s = state.repo.get_session(id).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?.ok_or(StatusCode::NOT_FOUND)?;
     let root = s.settings.project_root.clone().ok_or(StatusCode::BAD_REQUEST)?;
     let dry_run = b.dry_run.unwrap_or_else(|| s.settings.tool_policies.as_ref().and_then(|p| p.dry_run).unwrap_or(true));
     let res = move_file_under_root(&root, &b.from, &b.to, dry_run).map_err(|_| StatusCode::BAD_REQUEST)?;
@@ -287,8 +270,7 @@ async fn delete_session_file(
     Json(b): Json<DeleteBody>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     { let _ = metrics::counter!("http.requests", "path" => "/v1/sessions/:id/files/delete", "method" => "POST"); }
-    let sessions = state.sessions.read().await;
-    let s = sessions.iter().find(|s| s.id == id).ok_or(StatusCode::NOT_FOUND)?;
+    let s = state.repo.get_session(id).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?.ok_or(StatusCode::NOT_FOUND)?;
     let root = s.settings.project_root.clone().ok_or(StatusCode::BAD_REQUEST)?;
     let dry_run = b.dry_run.unwrap_or_else(|| s.settings.tool_policies.as_ref().and_then(|p| p.dry_run).unwrap_or(true));
     let res = delete_file_under_root(&root, &b.path, dry_run).map_err(|_| StatusCode::BAD_REQUEST)?;
@@ -300,8 +282,7 @@ async fn get_git_status(
     axum::extract::Path(id): axum::extract::Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     { let _ = metrics::counter!("http.requests", "path" => "/v1/sessions/:id/git/status", "method" => "GET"); }
-    let sessions = state.sessions.read().await;
-    let s = sessions.iter().find(|s| s.id == id).ok_or(StatusCode::NOT_FOUND)?;
+    let s = state.repo.get_session(id).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?.ok_or(StatusCode::NOT_FOUND)?;
     let root = s.settings.project_root.clone().ok_or(StatusCode::BAD_REQUEST)?;
     let st = git_status(&root).map_err(|_| StatusCode::BAD_REQUEST)?;
     Ok(Json(serde_json::to_value(st).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?))
@@ -312,8 +293,7 @@ async fn get_git_diff(
     axum::extract::Path(id): axum::extract::Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     { let _ = metrics::counter!("http.requests", "path" => "/v1/sessions/:id/git/diff", "method" => "GET"); }
-    let sessions = state.sessions.read().await;
-    let s = sessions.iter().find(|s| s.id == id).ok_or(StatusCode::NOT_FOUND)?;
+    let s = state.repo.get_session(id).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?.ok_or(StatusCode::NOT_FOUND)?;
     let root = s.settings.project_root.clone().ok_or(StatusCode::BAD_REQUEST)?;
     let d = git_diff(&root).map_err(|_| StatusCode::BAD_REQUEST)?;
     Ok(Json(serde_json::json!({"diff": d})))
@@ -324,8 +304,7 @@ async fn post_git_add_all(
     axum::extract::Path(id): axum::extract::Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     { let _ = metrics::counter!("http.requests", "path" => "/v1/sessions/:id/git/add_all", "method" => "POST"); }
-    let sessions = state.sessions.read().await;
-    let s = sessions.iter().find(|s| s.id == id).ok_or(StatusCode::NOT_FOUND)?;
+    let s = state.repo.get_session(id).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?.ok_or(StatusCode::NOT_FOUND)?;
     let root = s.settings.project_root.clone().ok_or(StatusCode::BAD_REQUEST)?;
     git_add_all(&root).map_err(|_| StatusCode::BAD_REQUEST)?;
     Ok(Json(serde_json::json!({"ok": true})))
@@ -340,8 +319,7 @@ async fn post_git_commit(
     Json(b): Json<CommitBody>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     { let _ = metrics::counter!("http.requests", "path" => "/v1/sessions/:id/git/commit", "method" => "POST"); }
-    let sessions = state.sessions.read().await;
-    let s = sessions.iter().find(|s| s.id == id).ok_or(StatusCode::NOT_FOUND)?;
+    let s = state.repo.get_session(id).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?.ok_or(StatusCode::NOT_FOUND)?;
     let root = s.settings.project_root.clone().ok_or(StatusCode::BAD_REQUEST)?;
     let oid = git_commit(&root, &b.message).map_err(|_| StatusCode::BAD_REQUEST)?;
     Ok(Json(serde_json::json!({"commit": oid})))
@@ -353,13 +331,10 @@ async fn patch_session_settings(
     Json(patch): Json<SessionSettingsPatch>,
 ) -> Result<Json<SessionSettingsResponse>, StatusCode> {
     { let _ = metrics::counter!("http.requests", "path" => "/v1/sessions/:id/settings", "method" => "PATCH"); }
-    let mut sessions = state.sessions.write().await;
-    if let Some(s) = sessions.iter_mut().find(|s| s.id == id) {
-        s.settings.apply_patch(patch);
-        Ok(Json(SessionSettingsResponse { settings: s.settings.clone() }))
-    } else {
-        Err(StatusCode::NOT_FOUND)
-    }
+    let mut s = state.repo.get_session(id).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?.ok_or(StatusCode::NOT_FOUND)?;
+    s.settings.apply_patch(patch);
+    state.repo.update_settings(id, s.settings.clone()).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(SessionSettingsResponse { settings: s.settings }))
 }
 
 async fn healthz() -> Json<serde_json::Value> {
@@ -400,8 +375,7 @@ async fn ingest_url(
     Json(b): Json<UrlIngestBody>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     { let _ = metrics::counter!("http.requests", "path" => "/v1/sessions/:id/context/url", "method" => "POST"); }
-    let mut sessions = state.sessions.write().await;
-    let s = sessions.iter_mut().find(|s| s.id == id).ok_or(StatusCode::NOT_FOUND)?;
+    let s = state.repo.get_session(id).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?.ok_or(StatusCode::NOT_FOUND)?;
     let parsed = Url::parse(&b.url).map_err(|_| StatusCode::BAD_REQUEST)?;
     let host = parsed.host_str().ok_or(StatusCode::BAD_REQUEST)?;
     if !is_allowed_host(&s.settings.network_allowlist, host) {
@@ -409,14 +383,14 @@ async fn ingest_url(
     }
     let max_bytes = b.max_bytes.unwrap_or(256 * 1024).min(2 * 1024 * 1024);
     let content = fetch_and_extract(&b.url, max_bytes).await.map_err(|_| StatusCode::BAD_REQUEST)?;
-    s.tool_history.push(crate::session::ToolEvent {
+    state.repo.append_tool_event(id, crate::session::ToolEvent {
         id: Uuid::new_v4(),
         tool: "url".into(),
         summary: format!("fetched {} ({} chars)", b.url, content.len()),
         status: "ok".into(),
         error: None,
-        created_at: chrono::Utc::now(),
-    });
+        created_at: Utc::now(),
+    }).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(serde_json::json!({"url": b.url, "content": content})))
 }
 
