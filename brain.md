@@ -17,6 +17,7 @@ Concise, always-current knowledge base for major project information. Keep this 
   - Planning-first policy for new features. See `docs/process/feature-planning.md` and template `docs/templates/FEATURE_PLANNING_TEMPLATE.md`.
   - Tests: new tests allowed; existing tests immutable. See `.cursor/rules/no-auto-tests.mdc`.
   - Plan completion tracking: when implementation for an approved plan is done, mark the plan doc `Status: Completed (YYYY-MM-DD)` and add an entry under "Completed plans" below.
+  - Interactive planning: planning is conducted via a concise, back-and-forth Q&A. The agent proposes defaults and states assumptions to avoid blocking. See `docs/process/feature-planning.md` for guidance and keep "### 12. Approval" numbering unchanged.
 
 ## Conventions
 

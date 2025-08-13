@@ -22,6 +22,12 @@ pub trait SessionRepository: Send + Sync {
     async fn update_settings(&self, id: Uuid, settings: SessionSettings) -> anyhow::Result<()>;
     async fn append_message(&self, id: Uuid, msg: Message) -> anyhow::Result<()>;
     async fn append_tool_event(&self, id: Uuid, ev: ToolEvent) -> anyhow::Result<()>;
+    // System rules CRUD
+    async fn upsert_rule(&self, name: &str, content: &str) -> anyhow::Result<()>;
+    async fn get_rule(&self, name: &str) -> anyhow::Result<Option<(String, String)>>; // (name, content)
+    async fn list_rules(&self) -> anyhow::Result<Vec<(String, String)>>;
+    // Context items for includes
+    async fn add_context_item(&self, session_id: Uuid, kind: &str, key: &str, excerpt: &str, byte_len: i64) -> anyhow::Result<()>;
 }
 
 impl SqliteSessionRepository {
@@ -180,6 +186,60 @@ impl SessionRepository for SqliteSessionRepository {
             .execute(&self.pool).await?;
         Ok(())
     }
+
+    async fn upsert_rule(&self, name: &str, content: &str) -> anyhow::Result<()> {
+        let now = Utc::now().to_rfc3339();
+        // try update first
+        let res = sqlx::query("UPDATE rules SET content = ?1, updated_at = ?2 WHERE name = ?3")
+            .bind(content)
+            .bind(&now)
+            .bind(name)
+            .execute(&self.pool).await?;
+        if res.rows_affected() == 0 {
+            // insert
+            let id = Uuid::new_v4().to_string();
+            sqlx::query("INSERT INTO rules (id, name, content, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)")
+                .bind(id)
+                .bind(name)
+                .bind(content)
+                .bind(&now)
+                .bind(&now)
+                .execute(&self.pool).await?;
+        }
+        Ok(())
+    }
+
+    async fn get_rule(&self, name: &str) -> anyhow::Result<Option<(String, String)>> {
+        let row = sqlx::query("SELECT name, content FROM rules WHERE name = ?1")
+            .bind(name)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.map(|r| (r.get::<String, _>("name"), r.get::<String, _>("content"))))
+    }
+
+    async fn list_rules(&self) -> anyhow::Result<Vec<(String, String)>> {
+        let rows = sqlx::query("SELECT name, content FROM rules ORDER BY name ASC")
+            .fetch_all(&self.pool)
+            .await?;
+        let mut out = Vec::new();
+        for r in rows { out.push((r.get::<String, _>("name"), r.get::<String, _>("content"))); }
+        Ok(out)
+    }
+
+    async fn add_context_item(&self, session_id: Uuid, kind: &str, key: &str, excerpt: &str, byte_len: i64) -> anyhow::Result<()> {
+        let id = Uuid::new_v4().to_string();
+        let now = Utc::now().to_rfc3339();
+        sqlx::query("INSERT INTO context_items (id, session_id, kind, key, content_excerpt, byte_len, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)")
+            .bind(id)
+            .bind(session_id.to_string())
+            .bind(kind)
+            .bind(key)
+            .bind(excerpt)
+            .bind(byte_len)
+            .bind(now)
+            .execute(&self.pool).await?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -273,6 +333,47 @@ mod tests {
 
         // Migrations idempotent: re-run initialize on same file
         let _repo2 = SqliteSessionRepository::initialize(Some(format!("sqlite://{}", path.to_string_lossy()))).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn rules_upsert_and_list_and_get() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let url = format!("sqlite://{}", path.to_string_lossy());
+        let repo = SqliteSessionRepository::initialize(Some(url)).await.unwrap();
+
+        repo.upsert_rule("editor-guidelines", "Use spaces, wrap lines.").await.unwrap();
+        repo.upsert_rule("security", "No secrets in code.").await.unwrap();
+        // update existing
+        repo.upsert_rule("security", "Never commit secrets.").await.unwrap();
+
+        let r = repo.get_rule("security").await.unwrap().unwrap();
+        assert_eq!(r.0, "security");
+        assert_eq!(r.1, "Never commit secrets.");
+
+        let list = repo.list_rules().await.unwrap();
+        assert!(list.iter().any(|(n, _)| n == "editor-guidelines"));
+        assert!(list.iter().any(|(n, c)| n == "security" && c == "Never commit secrets."));
+    }
+
+    #[tokio::test]
+    async fn context_items_inserted_for_session() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let url = format!("sqlite://{}", path.to_string_lossy());
+        let repo = SqliteSessionRepository::initialize(Some(url)).await.unwrap();
+
+        let session_id = repo.create_session(None, SessionSettings::default()).await.unwrap();
+        repo.add_context_item(session_id, "file", "src/main.rs", "fn main(){}", 12).await.unwrap();
+
+        // verify via direct query
+        let row = sqlx::query("SELECT count(*) as c FROM context_items WHERE session_id = ?1")
+            .bind(session_id.to_string())
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+        let c: i64 = row.get::<i64, _>("c");
+        assert_eq!(c, 1);
     }
 }
 

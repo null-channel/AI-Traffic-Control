@@ -30,6 +30,7 @@ enum Commands {
     Git { #[command(subcommand)] cmd: GitCmd },
     Discovery { #[command(subcommand)] cmd: DiscoveryCmd },
     Files { #[command(subcommand)] cmd: FilesCmd },
+    Agent { #[command(subcommand)] cmd: AgentCmd },
 }
 
 #[derive(Debug, Subcommand)]
@@ -63,6 +64,13 @@ enum FilesCmd {
     Write(WriteArgs),
     Move(MoveArgs),
     Delete(DeleteArgs),
+}
+
+#[derive(Debug, Subcommand)]
+enum AgentCmd {
+    IncludeFile(AgentIncludeFileArgs),
+    IncludeUrl(AgentIncludeUrlArgs),
+    AddRule(AgentAddRuleArgs),
 }
 
 #[derive(Debug, Args)]
@@ -171,6 +179,42 @@ struct DeleteArgs {
     path: String,
     #[arg(long, default_value_t = true)]
     dry_run: bool,
+}
+
+#[derive(Debug, Args)]
+struct AgentIncludeFileArgs {
+    #[command(flatten)]
+    id: SessionIdArg,
+    #[arg(long)]
+    path: String,
+    #[arg(long, default_value_t = 65536)]
+    max_bytes: usize,
+}
+
+#[derive(Debug, Args)]
+struct AgentIncludeUrlArgs {
+    #[command(flatten)]
+    id: SessionIdArg,
+    #[arg(long)]
+    url: String,
+    #[arg(long, default_value_t = 262144)]
+    max_bytes: usize,
+}
+
+#[derive(Debug, Args)]
+struct AgentAddRuleArgs {
+    #[command(flatten)]
+    id: SessionIdArg,
+    #[arg(long)]
+    name: String,
+    #[arg(long)]
+    content: Option<String>,
+    #[arg(long)]
+    content_file: Option<std::path::PathBuf>,
+    #[arg(long, default_value_t = false)]
+    system: bool,
+    #[arg(long)]
+    repo_dir: Option<String>,
 }
 
 #[tokio::main]
@@ -327,6 +371,37 @@ async fn main() -> anyhow::Result<()> {
             FilesCmd::Delete(args) => {
                 let res = file_ops::delete_file_under_root(&args.root.root, &args.path, args.dry_run)?;
                 println!("{}", serde_json::to_string_pretty(&res)?);
+            }
+        },
+        Commands::Agent { cmd } => match cmd {
+            AgentCmd::IncludeFile(args) => {
+                let client = reqwest::Client::new();
+                let body = json!({ "kind": "include_file", "args": { "path": args.path, "max_bytes": args.max_bytes } });
+                let resp = client.post(format!("{}/v1/sessions/{}/agent/command", args.id.server.server, args.id.id)).json(&body).send().await?;
+                if !resp.status().is_success() { anyhow::bail!("server error: {}", resp.status()); }
+                let v: serde_json::Value = resp.json().await?;
+                println!("{}", serde_json::to_string_pretty(&v)?);
+            }
+            AgentCmd::IncludeUrl(args) => {
+                let client = reqwest::Client::new();
+                let body = json!({ "kind": "include_url", "args": { "url": args.url, "max_bytes": args.max_bytes } });
+                let resp = client.post(format!("{}/v1/sessions/{}/agent/command", args.id.server.server, args.id.id)).json(&body).send().await?;
+                if !resp.status().is_success() { anyhow::bail!("server error: {}", resp.status()); }
+                let v: serde_json::Value = resp.json().await?;
+                println!("{}", serde_json::to_string_pretty(&v)?);
+            }
+            AgentCmd::AddRule(args) => {
+                let client = reqwest::Client::new();
+                let content = match (&args.content, &args.content_file) {
+                    (Some(s), None) => s.clone(),
+                    (None, Some(p)) => std::fs::read_to_string(p)?,
+                    _ => anyhow::bail!("provide exactly one of --content or --content-file"),
+                };
+                let body = json!({ "kind": "add_rule", "args": { "system": args.system, "name": args.name, "content": content, "repo_dir": args.repo_dir } });
+                let resp = client.post(format!("{}/v1/sessions/{}/agent/command", args.id.server.server, args.id.id)).json(&body).send().await?;
+                if !resp.status().is_success() { anyhow::bail!("server error: {}", resp.status()); }
+                let v: serde_json::Value = resp.json().await?;
+                println!("{}", serde_json::to_string_pretty(&v)?);
             }
         },
     }

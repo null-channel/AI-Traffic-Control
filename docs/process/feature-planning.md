@@ -27,4 +27,24 @@ This document outlines how we plan new features before implementation.
 - Every PR must link to the planning doc
 - If scope changes, update the plan and request re-review
 
+### Interactive planning guidance
+
+- Conversational loop:
+  - Use a back-and-forth Q&A to rapidly clarify requirements, constraints, and acceptance criteria.
+  - Group questions to minimize interruption; propose defaults when reasonable rather than blocking.
+- Agent responsibilities:
+  - State assumptions explicitly and continue with provisional defaults if low risk; flag them in the doc.
+  - Offer 1–3 concrete options with a recommendation when choices arise (e.g., directory paths, APIs).
+  - Keep the plan concise and scannable; link to canonical docs instead of duplicating long content.
+- User responsibilities:
+  - Confirm or adjust assumptions and defaults; highlight non-negotiables early.
+  - Call out domain constraints (security, compliance, performance budgets) up front.
+- Documentation expectations:
+  - Capture decisions and assumptions within relevant sections (Summary, Requirements, Design).
+  - Track unresolved items in "### 11. Open questions"; move them into decisions once resolved.
+  - Ensure "### 8. High-level test interfaces" is co-authored and concrete before approval.
+- Flow and timing:
+  - Iterate in short passes: clarify → update plan → confirm → proceed.
+  - Keep "### 12. Approval" numbering unchanged per repository policy.
+
 
