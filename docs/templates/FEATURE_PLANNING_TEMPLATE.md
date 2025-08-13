@@ -2,6 +2,17 @@
 
 Fill this out collaboratively before implementation. Keep it concise but complete.
 
+### Interactive planning checklist (use during planning; complete before approval)
+
+- [ ] Confirm scope: goals and non-goals are explicit and agreed
+- [ ] Clarify requirements: functional and non-functional constraints captured
+- [ ] State assumptions and defaults; highlight any provisional choices
+- [ ] Record key decisions with brief rationale and alternatives considered
+- [ ] Define "High-level test interfaces" with concrete interfaces and behaviors
+- [ ] List open questions with an owner to resolve each
+- [ ] Identify risks and mitigations, including security and rollout
+- [ ] Name stakeholders/approvers; confirm approval gate and date
+
 ### 1. Summary
 
 - What are we building and why now?
