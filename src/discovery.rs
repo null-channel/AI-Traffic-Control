@@ -59,9 +59,18 @@ pub fn resolve_under_root(root: &str, rel: &str) -> Option<PathBuf> {
             }
             acc
         });
-    let canonical = root_abs.join(normalized);
-    let canonical = canonical.canonicalize().ok()?;
-    if canonical.starts_with(&root_abs) { Some(canonical) } else { None }
+    let full_path = root_abs.join(&normalized);
+    match full_path.canonicalize() {
+        Ok(canonical) => {
+            if canonical.starts_with(&root_abs) { Some(canonical) } else { None }
+        }
+        Err(_) => {
+            // If the path does not exist yet (e.g., creating a new file), validate the parent
+            let parent = full_path.parent().unwrap_or(&root_abs);
+            let parent_canon = parent.canonicalize().ok()?;
+            if parent_canon.starts_with(&root_abs) { Some(full_path) } else { None }
+        }
+    }
 }
 
 pub fn read_file_under_root(root: &str, rel: &str, max_bytes: usize) -> anyhow::Result<String> {

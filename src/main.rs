@@ -10,6 +10,7 @@ mod file_ops;
 mod git_ops;
 mod models;
 mod storage;
+mod agent;
 use serde_json::json;
 
 #[derive(Debug, Parser)]

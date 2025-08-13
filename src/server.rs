@@ -14,7 +14,8 @@ use url::Url;
 use metrics::Unit;
 use crate::storage::{SqliteSessionRepository, SessionRepository};
 use chrono::Utc;
-use std::fs;
+// use std::fs; // no longer used here; file writes handled by agent engine
+use crate::agent::engine::{AgentContext, EngineCommand, execute};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -346,14 +347,14 @@ async fn healthz() -> Json<serde_json::Value> {
 #[derive(Debug, Deserialize)]
 struct UrlIngestBody { url: String, max_bytes: Option<usize> }
 
-fn is_allowed_host(allowlist: &Option<Vec<String>>, host: &str) -> bool {
+pub(crate) fn is_allowed_host(allowlist: &Option<Vec<String>>, host: &str) -> bool {
     match allowlist {
         None => false,
         Some(list) => list.iter().any(|h| h == host),
     }
 }
 
-async fn fetch_and_extract(url: &str, max_bytes: usize) -> anyhow::Result<String> {
+pub(crate) async fn fetch_and_extract(url: &str, max_bytes: usize) -> anyhow::Result<String> {
     let resp = reqwest::Client::new().get(url).send().await?;
     let status = resp.status();
     if !status.is_success() { anyhow::bail!("fetch failed: {}", status); }
@@ -422,6 +423,7 @@ pub async fn serve(addr: SocketAddr, state: AppState) -> anyhow::Result<()> {
         .route("/v1/sessions/:id/git/commit", post(post_git_commit))
         .route("/v1/sessions/:id/context/url", post(ingest_url))
         .route("/v1/sessions/:id/agent/command", post(agent_command))
+        .route("/v1/sessions/:id/agent/tool/:name", post(agent_tool))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -446,46 +448,48 @@ async fn agent_command(
 ) -> Result<Json<AgentCommandResponse>, StatusCode> {
     { let _ = metrics::counter!("http.requests", "path" => "/v1/sessions/:id/agent/command", "method" => "POST"); }
     let s = state.repo.get_session(id).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?.ok_or(StatusCode::NOT_FOUND)?;
-    match cmd {
+    let ctx = AgentContext { repo: &*state.repo };
+    let res = match cmd {
         AgentCommandBody::IncludeFile { path, max_bytes } => {
             let root = s.settings.project_root.clone().ok_or(StatusCode::BAD_REQUEST)?;
-            let limit = max_bytes.unwrap_or(65536).min(2 * 1024 * 1024);
-            let content = crate::discovery::read_file_under_root(&root, &path, limit).map_err(|_| StatusCode::BAD_REQUEST)?;
-            state.repo.add_context_item(id, "file", &path, &content, content.len() as i64).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-            state.repo.append_tool_event(id, crate::session::ToolEvent { id: Uuid::new_v4(), tool: "include_file".into(), summary: format!("included {} ({} chars)", path, content.len()), status: "ok".into(), error: None, created_at: Utc::now() }).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-            Ok(Json(AgentCommandResponse { ok: true, summary: format!("file:{} bytes:{}", path, content.len()) }))
+            execute(ctx, EngineCommand::IncludeFile { session_id: id, project_root: &root, path: &path, max_bytes: max_bytes.unwrap_or(65536).min(2 * 1024 * 1024) }).await
         }
         AgentCommandBody::IncludeUrl { url, max_bytes } => {
-            let limit = max_bytes.unwrap_or(262144).min(2 * 1024 * 1024);
-            // reuse allowlist logic
-            let parsed = url::Url::parse(&url).map_err(|_| StatusCode::BAD_REQUEST)?;
-            let host = parsed.host_str().ok_or(StatusCode::BAD_REQUEST)?;
-            if !is_allowed_host(&s.settings.network_allowlist, host) { return Err(StatusCode::FORBIDDEN); }
-            let content = fetch_and_extract(&url, limit).await.map_err(|_| StatusCode::BAD_REQUEST)?;
-            state.repo.add_context_item(id, "url", &url, &content, content.len() as i64).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-            state.repo.append_tool_event(id, crate::session::ToolEvent { id: Uuid::new_v4(), tool: "include_url".into(), summary: format!("included {} ({} chars)", url, content.len()), status: "ok".into(), error: None, created_at: Utc::now() }).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-            Ok(Json(AgentCommandResponse { ok: true, summary: format!("url:{} bytes:{}", url, content.len()) }))
+            execute(ctx, EngineCommand::IncludeUrl { session_id: id, allowlist: s.settings.network_allowlist.as_ref(), url: &url, max_bytes: max_bytes.unwrap_or(262144).min(2 * 1024 * 1024) }).await
         }
         AgentCommandBody::AddRule { system, name, content, repo_dir } => {
             if system {
-                state.repo.upsert_rule(&name, &content).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-                state.repo.append_tool_event(id, crate::session::ToolEvent { id: Uuid::new_v4(), tool: "add_rule".into(), summary: format!("system rule upserted: {}", name), status: "ok".into(), error: None, created_at: Utc::now() }).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-                Ok(Json(AgentCommandResponse { ok: true, summary: format!("system rule:{}", name) }))
+                execute(ctx, EngineCommand::AddRuleSystem { session_id: id, name: &name, content: &content }).await
             } else {
                 let root = s.settings.project_root.clone().ok_or(StatusCode::BAD_REQUEST)?;
                 let dir = repo_dir.unwrap_or_else(|| ".cursor/rules".into());
-                let path = std::path::Path::new(&root).join(dir).join(format!("{}.md", slugify(&name)));
-                let parent = path.parent().unwrap_or(std::path::Path::new(&root)).to_path_buf();
-                if let Err(_) = fs::create_dir_all(&parent) { return Err(StatusCode::BAD_REQUEST); }
-                if let Err(_) = fs::write(&path, content.as_bytes()) { return Err(StatusCode::BAD_REQUEST); }
-                state.repo.append_tool_event(id, crate::session::ToolEvent { id: Uuid::new_v4(), tool: "add_rule".into(), summary: format!("repo rule written: {}", path.display()), status: "ok".into(), error: None, created_at: Utc::now() }).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-                Ok(Json(AgentCommandResponse { ok: true, summary: format!("repo rule:{}", path.display()) }))
+                execute(ctx, EngineCommand::AddRuleRepo { session_id: id, project_root: &root, name: &name, content: &content, repo_dir: &dir }).await
             }
         }
+    };
+    match res {
+        Ok(summary) => Ok(Json(AgentCommandResponse { ok: true, summary })),
+        Err(_) => Err(StatusCode::BAD_REQUEST),
     }
 }
 
-fn slugify(name: &str) -> String {
+#[derive(Debug, Deserialize)]
+struct ToolBody { args: serde_json::Value }
+
+async fn agent_tool(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    axum::extract::Path((id, name)): axum::extract::Path<(Uuid, String)>,
+    Json(b): Json<ToolBody>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    { let _ = metrics::counter!("http.requests", "path" => "/v1/sessions/:id/agent/tool/:name", "method" => "POST"); }
+    let ctx = crate::agent::engine::AgentContext { repo: &*state.repo };
+    match crate::agent::engine::dispatch_tool(ctx, id, &name, b.args).await {
+        Ok(v) => Ok(Json(v)),
+        Err(_) => Err(StatusCode::BAD_REQUEST),
+    }
+}
+
+fn slugify(name: &str) -> String { // kept for backward-compat in server if needed elsewhere
     let mut s = name.to_lowercase();
     s = s.chars().map(|c| if c.is_alphanumeric() { c } else { '-' }).collect();
     while s.contains("--") { s = s.replace("--", "-"); }
