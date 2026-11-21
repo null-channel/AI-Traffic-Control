@@ -59,9 +59,20 @@ pub async fn dispatch_tool<R: SessionRepository>(ctx: AgentContext<'_, R>, sessi
     let registry = ToolRegistry::with_default_tools();
     let tool = registry.get(tool_name).ok_or_else(|| anyhow::anyhow!("unknown tool"))?;
     let tctx = ToolsContext { repo: ctx.repo, session_id, settings: &sess.settings };
-    let res = tool.run(tctx, args).await?;
-    ctx.repo.append_tool_event(session_id, ToolEvent { id: Uuid::new_v4(), tool: tool.name().into(), summary: res.summary.clone(), status: "ok".into(), error: None, created_at: Utc::now() }).await?;
-    Ok(json!({ "summary": res.summary, "data": res.data }))
+    // metrics: count tool invocations by status (per-tool labels not supported by macro literals)
+    let output = match tool.run(tctx, args).await {
+        Ok(tool_res) => {
+            let _ = metrics::counter!("agent.tool.invocations.ok");
+            ctx.repo.append_tool_event(session_id, ToolEvent { id: Uuid::new_v4(), tool: tool.name().into(), summary: tool_res.summary.clone(), status: "ok".into(), error: None, created_at: Utc::now() }).await?;
+            json!({ "summary": tool_res.summary, "data": tool_res.data })
+        }
+        Err(e) => {
+            let _ = metrics::counter!("agent.tool.invocations.error");
+            ctx.repo.append_tool_event(session_id, ToolEvent { id: Uuid::new_v4(), tool: tool.name().into(), summary: format!("error: {}", e), status: "error".into(), error: Some(e.to_string()), created_at: Utc::now() }).await?;
+            return Err(e);
+        }
+    };
+    Ok(output)
 }
 
 #[cfg(test)]
@@ -197,6 +208,44 @@ mod tests {
         let df = dispatch_tool(AgentContext { repo: &repo }, sid, "git.diff", serde_json::json!({})).await.unwrap();
         let diff_str = df["data"]["diff"].as_str().unwrap();
         assert!(diff_str.is_empty() || diff_str.contains("diff --git"));
+    }
+
+    #[tokio::test]
+    async fn tool_rules_get_effective_merges_repo_over_system() {
+        let (repo, sid, root, _dir) = setup_session_with_root().await;
+        // upsert a system rule "security"
+        repo.upsert_rule("security", "Never commit secrets.").await.unwrap();
+        // write a repo rule with same slug overriding content
+        let rules_dir = std::path::Path::new(&root).join(".cursor/rules");
+        std::fs::create_dir_all(&rules_dir).unwrap();
+        std::fs::write(rules_dir.join("security.md"), b"Repo: stricter policy.").unwrap();
+
+        let v = dispatch_tool(AgentContext { repo: &repo }, sid, "rules.get_effective", serde_json::json!({})).await.unwrap();
+        let rules = v["data"]["rules"].as_array().unwrap();
+        // find security rule
+        let sec = rules.iter().find(|r| r["name"].as_str().unwrap().to_lowercase().contains("security")).unwrap();
+        assert_eq!(sec["source"].as_str().unwrap(), "repo");
+        assert!(sec["content"].as_str().unwrap().contains("Repo: stricter policy."));
+        assert!(v["summary"].as_str().unwrap().contains("repo overrides 1"));
+    }
+
+    #[cfg(feature = "workflows")]
+    #[tokio::test]
+    async fn tool_workflow_invoke_records_event() {
+        let (repo, sid, _root, _dir) = setup_session_with_root().await;
+        let ctx = AgentContext { repo: &repo };
+        let v = dispatch_tool(ctx, sid, "workflow.invoke", serde_json::json!({
+            "name": "code_review",
+            "input": { "target": "src/" }
+        })).await.unwrap();
+        // summary comes from workflow stub
+        assert!(v["summary"].as_str().unwrap().contains("code_review stub ran"));
+        // event recorded
+        use sqlx::Row;
+        let row = sqlx::query("SELECT count(*) as c FROM tool_events WHERE session_id = ?1 AND tool = 'workflow.invoke'")
+            .bind(sid.to_string()).fetch_one(repo.pool()).await.unwrap();
+        let c: i64 = row.get::<i64, _>("c");
+        assert_eq!(c, 1);
     }
 }
 

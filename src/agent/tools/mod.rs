@@ -11,6 +11,8 @@ pub mod rules;
 pub mod discovery_tools;
 pub mod file_tools;
 pub mod git_tools;
+#[cfg(feature = "workflows")]
+pub mod workflow_tools;
 
 pub struct ToolContext<'a> {
     pub repo: &'a dyn SessionRepository,
@@ -40,6 +42,7 @@ impl ToolRegistry {
         r.register(Box::new(include_file::IncludeFileTool));
         r.register(Box::new(include_url::IncludeUrlTool));
         r.register(Box::new(rules::AddRuleTool));
+        r.register(Box::new(rules::GetEffectiveRulesTool));
         r.register(Box::new(discovery_tools::ListTool));
         r.register(Box::new(discovery_tools::SearchTool));
         r.register(Box::new(discovery_tools::ReadTool));
@@ -50,6 +53,10 @@ impl ToolRegistry {
         r.register(Box::new(git_tools::DiffTool));
         r.register(Box::new(git_tools::AddAllTool));
         r.register(Box::new(git_tools::CommitTool));
+        #[cfg(feature = "workflows")]
+        {
+            r.register(Box::new(workflow_tools::WorkflowInvokeTool));
+        }
         r
     }
     pub fn register(&mut self, t: Box<dyn Tool>) { self.tools.push(t); }

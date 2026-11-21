@@ -230,7 +230,11 @@ async fn main() -> anyhow::Result<()> {
             let addr: SocketAddr = listen.parse()?;
             // Initialize SQLite repository (DATABASE_URL or default path)
             let repo = storage::SqliteSessionRepository::initialize(std::env::var("DATABASE_URL").ok()).await?;
-            let state = server::AppState { repo: std::sync::Arc::new(repo), model: None };
+            // Enable model if OPENAI_API_KEY is present
+            let model = if std::env::var("OPENAI_API_KEY").is_ok() {
+                Some(models::OpenAICompatible::from_env())
+            } else { None };
+            let state = server::AppState { repo: std::sync::Arc::new(repo), model };
             server::serve(addr, state).await?;
         }
         Commands::Session { cmd } => match cmd {
